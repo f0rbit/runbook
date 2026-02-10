@@ -39,6 +39,7 @@ export class InMemoryAgentExecutor implements AgentExecutor {
 	private responses: Array<{ pattern: RegExp; response: AgentResponse }> = [];
 	private sessions: Map<string, { title?: string }> = new Map();
 	prompted: Array<{ session_id: string; opts: PromptOpts }> = [];
+	created_sessions: Array<{ id: string; opts: CreateSessionOpts }> = [];
 	private next_session_id = 1;
 
 	on(pattern: RegExp | string, response: Partial<AgentResponse> & { text: string }): void {
@@ -55,6 +56,7 @@ export class InMemoryAgentExecutor implements AgentExecutor {
 	async createSession(opts: CreateSessionOpts): Promise<Result<AgentSession, AgentError>> {
 		const id = `test-session-${this.next_session_id++}`;
 		this.sessions.set(id, { title: opts.title });
+		this.created_sessions.push({ id, opts });
 		return ok({ id, created_at: new Date() });
 	}
 
