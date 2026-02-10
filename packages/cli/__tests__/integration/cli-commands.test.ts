@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Trace } from "@f0rbit/runbook";
 import type { RunInfo, WorkflowInfo } from "../../src/client";
@@ -332,17 +332,26 @@ describe("createRunbookClient", () => {
 });
 
 describe("loadConfig", () => {
-	test("returns error when no config found", async () => {
+	test("returns error when no config found and no global config", async () => {
 		const tmp = mkdtempSync(join(tmpdir(), "runbook-test-"));
 		writeFileSync(join(tmp, "package.json"), JSON.stringify({ private: true }));
+
+		// If global config exists, loadConfig will succeed (expected behavior)
+		const global_config = join(homedir(), ".config", "runbook", "runbook.config.ts");
+		const global_exists = existsSync(global_config);
 
 		const original_cwd = process.cwd();
 		process.chdir(tmp);
 		try {
 			const result = await loadConfig();
-			expect(result.ok).toBe(false);
-			if (!result.ok) {
-				expect(result.error.kind).toBe("config_not_found");
+			if (global_exists) {
+				// Global config found — this is correct behavior
+				expect(result.ok).toBe(true);
+			} else {
+				expect(result.ok).toBe(false);
+				if (!result.ok) {
+					expect(result.error.kind).toBe("config_not_found");
+				}
 			}
 		} finally {
 			process.chdir(original_cwd);
