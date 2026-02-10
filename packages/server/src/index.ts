@@ -1,12 +1,14 @@
 // Engine
-export { createEngine } from "./engine";
+
 export type { Engine, EngineOpts, RunOpts } from "./engine";
-
-// State
-export { createInMemoryStateStore } from "./state";
-export type { RunStateStore } from "./state";
-
+export { createEngine } from "./engine";
+export type { OpenCodeExecutorOpts } from "./providers/opencode";
+export { OpenCodeExecutor } from "./providers/opencode";
 // Providers
 export { BunShellProvider } from "./providers/shell";
-export { OpenCodeExecutor } from "./providers/opencode";
-export type { OpenCodeExecutorOpts } from "./providers/opencode";
+export type { ServerDeps } from "./server";
+// Server
+export { createServer } from "./server";
+export type { RunStateStore } from "./state";
+// State
+export { createInMemoryStateStore } from "./state";

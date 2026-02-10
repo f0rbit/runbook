@@ -1,3 +1,13 @@
-// @f0rbit/runbook-git-store
-// Phase 3.5 will implement git artifact store
-export {};
+export { createGitArtifactStore } from "./store";
+export type {
+	GitArtifactStore,
+	GitStoreError,
+	ListOpts,
+	StepArtifacts,
+	StorableRun,
+	StoredRun,
+	StoredRunInfo,
+	StoreOpts,
+	SyncOpts,
+	SyncResult,
+} from "./types";
