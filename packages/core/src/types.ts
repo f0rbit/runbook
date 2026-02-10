@@ -7,9 +7,10 @@ export type AgentOutputMode = "analyze" | "build";
 
 export type AgentStepOpts = {
 	model?: { provider_id: string; model_id: string };
-	agent_type?: "build" | "plan";
+	agent_type?: string;
 	timeout_ms?: number;
 	system_prompt?: string;
+	system_prompt_file?: string;
 };
 
 export type StepKind =
@@ -80,7 +81,7 @@ export type AgentSession = {
 export type PromptOpts = {
 	text: string;
 	model?: { provider_id: string; model_id: string };
-	agent_type?: "build" | "plan";
+	agent_type?: string;
 	timeout_ms?: number;
 };
 

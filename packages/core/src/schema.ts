@@ -2,9 +2,10 @@ import { z } from "zod";
 
 export const AgentStepOptsSchema = z.object({
 	model: z.object({ provider_id: z.string(), model_id: z.string() }).optional(),
-	agent_type: z.enum(["build", "plan"]).optional(),
+	agent_type: z.string().optional(),
 	timeout_ms: z.number().positive().optional(),
 	system_prompt: z.string().optional(),
+	system_prompt_file: z.string().optional(),
 });
 
 export const ServerConfigSchema = z.object({

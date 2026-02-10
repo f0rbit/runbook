@@ -25,6 +25,7 @@ export type EngineOpts = {
 		agent?: AgentExecutor;
 		checkpoint?: CheckpointProvider;
 	};
+	working_directory?: string;
 };
 
 export type RunOpts = {
