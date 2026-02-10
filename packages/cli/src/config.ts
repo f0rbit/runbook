@@ -1,8 +1,8 @@
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { Result } from "@f0rbit/corpus";
 import { err, ok } from "@f0rbit/corpus";
 import type { RunbookConfig } from "@f0rbit/runbook";
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
 
 export type ConfigError =
 	| { kind: "config_not_found"; searched: string[] }
