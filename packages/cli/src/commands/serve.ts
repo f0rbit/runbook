@@ -1,5 +1,5 @@
 import type { Workflow } from "@f0rbit/runbook";
-import { createEngine, createInMemoryStateStore, createServer } from "@f0rbit/runbook-server";
+import { createEngine, createInMemoryStateStore, createServer, resolveProviders } from "@f0rbit/runbook-server";
 import { loadConfig } from "../config";
 
 export async function handleServe(args: string[]): Promise<void> {
@@ -15,7 +15,17 @@ export async function handleServe(args: string[]): Promise<void> {
 	const config = config_result.value;
 	const port = explicit_port ?? config.server?.port ?? 4400;
 
-	const engine = createEngine({});
+	const provider_result = await resolveProviders(config.providers);
+	if (!provider_result.ok) {
+		console.error("Provider init error:", provider_result.error);
+		process.exit(1);
+	}
+
+	const working_directory = config.working_directory ?? process.cwd();
+	const engine = createEngine({
+		providers: provider_result.value,
+		working_directory,
+	});
 	const state = createInMemoryStateStore();
 	const workflows = new Map<string, Workflow<unknown, unknown>>(
 		(config.workflows ?? []).map((wf: Workflow<unknown, unknown>) => [wf.id, wf] as const),

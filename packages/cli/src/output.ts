@@ -71,7 +71,7 @@ export function formatRunStatus(run: RunInfo): string {
 		const started = new Date(run.started_at).getTime();
 		const completed = new Date(run.completed_at).getTime();
 		const duration_ms = completed - started;
-		if (!isNaN(duration_ms) && duration_ms >= 0) {
+		if (!Number.isNaN(duration_ms) && duration_ms >= 0) {
 			lines.push(`  Duration: ${formatDuration(duration_ms)}`);
 		}
 	}

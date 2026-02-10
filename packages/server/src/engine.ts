@@ -1,3 +1,6 @@
+declare const Bun: { file(path: string): { text(): Promise<string> } };
+declare const process: { cwd(): string };
+
 import type { Result } from "@f0rbit/corpus";
 import { err, ok } from "@f0rbit/corpus";
 import type {
@@ -262,7 +265,9 @@ async function executeStep(
 				break;
 			}
 			const command = step.kind.command(input_parsed.data);
-			const shell_result = await shell_provider.exec(command);
+			const shell_result = await shell_provider.exec(command, {
+				cwd: engine_opts.working_directory,
+			});
 			if (!shell_result.ok) {
 				result = err(errors.shell(step.id, command, -1, shell_result.error.cause));
 				break;
@@ -277,7 +282,7 @@ async function executeStep(
 				result = err(errors.execution(step.id, "No agent executor configured"));
 				break;
 			}
-			result = await executeAgentStep(step, input_parsed.data, ctx, executor);
+			result = await executeAgentStep(step, input_parsed.data, ctx, executor, engine_opts);
 			break;
 		}
 
@@ -342,20 +347,41 @@ async function executeAgentStep(
 	input: unknown,
 	ctx: StepContext,
 	executor: AgentExecutor,
+	engine_opts: EngineOpts,
 ): Promise<Result<unknown, StepError>> {
 	if (step.kind.kind !== "agent") return err(errors.execution(step.id, "not an agent step"));
 
 	const { mode, agent_opts } = step.kind;
 	const prompt_text = step.kind.prompt(input);
 
+	// Resolve system_prompt_file if specified
+	let file_prompt: string | undefined;
+	if (agent_opts?.system_prompt_file) {
+		const file_path = agent_opts.system_prompt_file.startsWith("/")
+			? agent_opts.system_prompt_file
+			: `${engine_opts.working_directory ?? process.cwd()}/${agent_opts.system_prompt_file}`;
+		try {
+			file_prompt = await Bun.file(file_path).text();
+		} catch (e) {
+			return err(
+				errors.execution(
+					step.id,
+					`Failed to read system_prompt_file "${file_path}": ${e instanceof Error ? e.message : String(e)}`,
+				),
+			);
+		}
+	}
+
+	const base_prompt = [file_prompt, agent_opts?.system_prompt].filter(Boolean).join("\n\n");
 	const system_prompt =
 		mode === "analyze"
-			? [agent_opts?.system_prompt, formatOutputSchemaPrompt(step.output)].filter(Boolean).join("\n\n")
-			: agent_opts?.system_prompt;
+			? [base_prompt, formatOutputSchemaPrompt(step.output)].filter(Boolean).join("\n\n")
+			: base_prompt || undefined;
 
 	const session_result = await executor.createSession({
 		title: `runbook:${ctx.workflow_id}:${step.id}`,
 		system_prompt,
+		working_directory: engine_opts.working_directory,
 	});
 	if (!session_result.ok) return err(errors.agent(step.id, agentErrorMessage(session_result.error)));
 

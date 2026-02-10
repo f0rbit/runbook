@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Result } from "@f0rbit/corpus";
 import { err, ok } from "@f0rbit/corpus";
@@ -43,6 +44,12 @@ export async function loadConfig(explicit_path?: string): Promise<Result<Runbook
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
+	}
+
+	const global_config = join(homedir(), ".config", "runbook", "runbook.config.ts");
+	searched.push(global_config);
+	if (existsSync(global_config)) {
+		return importConfig(global_config);
 	}
 
 	return err({ kind: "config_not_found", searched });
