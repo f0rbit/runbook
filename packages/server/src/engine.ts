@@ -42,7 +42,7 @@ export type Engine = {
 };
 
 export function createEngine(engine_opts: EngineOpts = {}): Engine {
-	return {
+	const engine: Engine = {
 		async run<I, O>(workflow: Workflow<I, O>, input: I, opts?: RunOpts): Promise<Result<RunResult<O>, WorkflowError>> {
 			const run_id = opts?.run_id ?? crypto.randomUUID();
 			const trace = new TraceCollector();
@@ -100,6 +100,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 							run_id,
 							trace,
 							signal: opts?.signal ?? new AbortController().signal,
+							engine,
 						},
 						engine_opts,
 					);
@@ -133,6 +134,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 								run_id,
 								trace,
 								signal: opts?.signal ?? new AbortController().signal,
+								engine,
 							},
 							engine_opts,
 						),
@@ -184,6 +186,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 			});
 		},
 	};
+	return engine;
 }
 
 type StepExecContext = {
@@ -191,6 +194,7 @@ type StepExecContext = {
 	run_id: string;
 	trace: TraceCollector;
 	signal: AbortSignal;
+	engine: Engine;
 };
 
 async function executeStep(
@@ -244,6 +248,7 @@ async function executeStep(
 		run_id: ctx_base.run_id,
 		trace: ctx_base.trace,
 		signal: ctx_base.signal,
+		engine: ctx_base.engine,
 	};
 
 	let result: Result<unknown, StepError>;

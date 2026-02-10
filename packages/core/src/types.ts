@@ -33,6 +33,7 @@ export type StepContext = {
 	run_id: string;
 	trace: TraceEmitter;
 	signal: AbortSignal;
+	engine: EngineHandle;
 };
 
 // --- Workflow types ---
@@ -276,4 +277,12 @@ export type RunResult<O> = {
 	output: O;
 	trace: Trace;
 	duration_ms: number;
+};
+
+export type EngineHandle = {
+	run: <I, O>(
+		workflow: Workflow<I, O>,
+		input: I,
+		opts?: { run_id?: string; signal?: AbortSignal; on_trace?: (event: TraceEvent) => void },
+	) => Promise<Result<RunResult<O>, WorkflowError>>;
 };

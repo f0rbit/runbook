@@ -35,6 +35,7 @@ export type {
 	CheckpointProvider,
 	ClientError,
 	CreateSessionOpts,
+	EngineHandle,
 	MapperFn,
 	ParallelOutputTuple,
 	ParallelStepDef,
