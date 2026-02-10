@@ -1,0 +1,12 @@
+{
+  "name": "@f0rbit/runbook-git-store",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@f0rbit/runbook": "workspace:*",
+    "@f0rbit/corpus": "^0.3",
+    "zod": "^3"
+  }
+}

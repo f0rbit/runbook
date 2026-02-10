@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "paths": {
+      "@f0rbit/runbook": ["./packages/core/src"],
+      "@f0rbit/runbook/*": ["./packages/core/src/*"],
+      "@f0rbit/runbook-server": ["./packages/server/src"],
+      "@f0rbit/runbook-server/*": ["./packages/server/src/*"],
+      "@f0rbit/runbook-cli": ["./packages/cli/src"],
+      "@f0rbit/runbook-cli/*": ["./packages/cli/src/*"],
+      "@f0rbit/runbook-git-store": ["./packages/git-store/src"],
+      "@f0rbit/runbook-git-store/*": ["./packages/git-store/src/*"]
+    },
+    "baseUrl": "."
+  },
+  "include": ["packages/*/src/**/*.ts", "packages/*/__tests__/**/*.ts"]
+}

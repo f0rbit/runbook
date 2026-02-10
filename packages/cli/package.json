@@ -1,0 +1,15 @@
+{
+  "name": "@f0rbit/runbook-cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "runbook": "src/index.ts"
+  },
+  "dependencies": {
+    "@f0rbit/runbook": "workspace:*",
+    "@f0rbit/runbook-git-store": "workspace:*",
+    "@f0rbit/corpus": "^0.3",
+    "zod": "^3"
+  }
+}

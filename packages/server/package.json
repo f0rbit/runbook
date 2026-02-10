@@ -1,0 +1,16 @@
+{
+  "name": "@f0rbit/runbook-server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@f0rbit/runbook": "workspace:*",
+    "@f0rbit/corpus": "^0.3",
+    "@opencode-ai/sdk": "*",
+    "hono": "^4",
+    "zod": "^3",
+    "zod-to-json-schema": "^3"
+  }
+}
