@@ -48,3 +48,41 @@
 - Server API tests use Hono `app.request()` — no real HTTP
 - Git-store tests create temp directories with `git init` — fully isolated
 - Tests call SDK functions and server handlers directly, not the CLI binary
+
+## Engine Features
+- `system_prompt_file` on agent steps — loads markdown files as system prompts at execution time
+  - Absolute paths used as-is; relative paths resolved against `engine_opts.working_directory`
+  - File content prepended to any inline `system_prompt`; both are combined
+- `working_directory` propagation: config → engine → shell `opts.cwd` + agent `createSession`
+- `ctx.engine` on `StepContext` — fn() steps can run sub-workflows with inherited providers
+  - Enables: dynamic parallelism, conditional routing, retry loops, multi-turn sessions
+  - The `fn()` step is the escape hatch for all control flow not expressible in the pipeline builder
+- `agent_type` is a freeform `string` (not limited to "build" | "plan")
+
+## Provider Wiring
+- `resolveProviders(config)` in server package creates real providers from `ProviderConfig`
+  - Always creates `BunShellProvider`; creates `OpenCodeExecutor` when `agent.type === "opencode"`
+- `createServerCheckpointProvider()` bridges engine checkpoint flow with HTTP endpoint
+- `handleServe` calls `resolveProviders()` and passes `working_directory` to `createEngine()`
+
+## Config Discovery
+- Priority: `--config` flag → walk up from cwd → `~/.config/runbook/runbook.config.ts` (global fallback)
+- The global fallback enables user-wide workflow definitions separate from project configs
+- Local configs always take precedence over global
+
+## Workflow Definitions (at ~/.config/runbook/)
+- 4 workflows: `verify`, `question`, `simple-change`, `feature`
+- `verify` — parallel shell steps (tsc + bun test + biome) → merge fn
+- `question` — single explore agent step (analyze mode)
+- `simple-change` — coder agent (build mode) → verify sub-workflow → git commit
+- `feature` — explore → plan → checkpoint → dynamic phase execution via fn() + ctx.engine
+  - Phase execution: coder → verify → retry-fix loop (max 2) → git commit per phase
+  - Merge-step pattern: module-level closure captures plan data across checkpoint boundary
+- Agent system prompts stored in `~/.config/runbook/prompts/*.md`
+- Shared Zod schemas in `~/.config/runbook/schemas/common.ts`
+
+## Known Patterns and Gotchas
+- Checkpoint output replaces previous step output — use module-level closure to carry data forward
+- Sub-workflows inherit parent engine providers via `ctx.engine.run()` — do NOT create `createEngine({})` in fn() steps
+- `InMemoryAgentExecutor.created_sessions` tracks session creation opts for test assertions
+- 92 tests across 9 test files (as of workflow-integration milestone)
