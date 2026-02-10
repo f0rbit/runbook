@@ -12,7 +12,7 @@ declare const Bun: {
 			stderr?: "pipe" | "inherit" | "ignore";
 		},
 	): {
-		readonly stdin: WritableStream<Uint8Array>;
+		readonly stdin: { write(data: string | Uint8Array): number; end(): void; flush(): void };
 		readonly stdout: ReadableStream<Uint8Array>;
 		readonly stderr: ReadableStream<Uint8Array>;
 		readonly exited: Promise<number>;
@@ -32,9 +32,8 @@ const run = async (args: string[], cwd?: string, stdin_data?: string): Promise<R
 	});
 
 	if (stdin_data) {
-		const writer = proc.stdin.getWriter();
-		await writer.write(new TextEncoder().encode(stdin_data));
-		await writer.close();
+		proc.stdin.write(stdin_data);
+		proc.stdin.end();
 	}
 
 	const exit_code = await proc.exited;
