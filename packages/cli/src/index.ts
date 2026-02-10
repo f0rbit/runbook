@@ -24,7 +24,7 @@ function printHelp() {
 
 Commands:
   serve                        Start the runbook server
-  run <workflow> [--input json] Submit a workflow run
+  run <workflow> [task...] [--input json] Submit a workflow run
   status <run-id>              Get run status
   trace <run-id>               Display run trace
   list                         List available workflows

@@ -20,7 +20,7 @@ export function workflowRoutes(deps: WorkflowDeps) {
 			output_schema: zodToJsonSchema(w.output),
 			step_count: w.steps.length,
 		}));
-		return c.json(items);
+		return c.json({ workflows: items });
 	});
 
 	app.post("/workflows/:id/run", async (c) => {

@@ -41,9 +41,9 @@ describe("server api", () => {
 		expect(res.status).toBe(200);
 
 		const body = await res.json();
-		expect(body).toBeArrayOfSize(1);
-		expect(body[0].id).toBe("echo-workflow");
-		expect(body[0].step_count).toBe(1);
+		expect(body.workflows).toBeArrayOfSize(1);
+		expect(body.workflows[0].id).toBe("echo-workflow");
+		expect(body.workflows[0].step_count).toBe(1);
 	});
 
 	test("POST /workflows/:id/run returns 202 with run_id", async () => {

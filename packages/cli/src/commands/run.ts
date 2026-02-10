@@ -4,18 +4,31 @@ import { formatError, formatTrace } from "../output";
 export async function handleRun(args: string[], base_url: string): Promise<void> {
 	const workflow_id = args[0];
 	if (!workflow_id) {
-		console.error("Usage: runbook run <workflow> [--input <json>]");
+		console.error("Usage: runbook run <workflow> [task description...] [--input <json>]");
 		process.exit(1);
 	}
 
 	const input_idx = args.indexOf("--input");
 	let input: unknown = {};
+
 	if (input_idx !== -1 && args[input_idx + 1]) {
 		try {
 			input = JSON.parse(args[input_idx + 1]);
 		} catch {
 			console.error("Invalid JSON input");
 			process.exit(1);
+		}
+	} else {
+		const positional: string[] = [];
+		for (let i = 1; i < args.length; i++) {
+			if (args[i].startsWith("--")) {
+				i++;
+				continue;
+			}
+			positional.push(args[i]);
+		}
+		if (positional.length > 0) {
+			input = { task: positional.join(" ") };
 		}
 	}
 
