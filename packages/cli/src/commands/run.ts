@@ -1,5 +1,5 @@
 import { createRunbookClient } from "../client";
-import { formatError, formatTrace } from "../output";
+import { formatError, formatRunStatus, formatTrace } from "../output";
 
 export async function handleRun(args: string[], base_url: string): Promise<void> {
 	const workflow_id = args[0];
@@ -49,6 +49,25 @@ export async function handleRun(args: string[], base_url: string): Promise<void>
 		status = status_result.value.status;
 	}
 
+	// Fetch final status
+	const final_status = await client.getRunStatus(result.value.run_id);
+
+	if (final_status.ok && final_status.value.status === "failure") {
+		// Print run summary
+		console.log(formatRunStatus(final_status.value));
+		// Print detailed error
+		if (final_status.value.error) {
+			console.error(`\n${formatError(final_status.value.error)}`);
+		}
+		// Print trace if it has step events
+		const trace_result = await client.getRunTrace(result.value.run_id);
+		if (trace_result.ok && trace_result.value.events.length > 0) {
+			console.log(`\n${formatTrace(trace_result.value)}`);
+		}
+		process.exit(1);
+	}
+
+	// Success — print trace
 	const trace_result = await client.getRunTrace(result.value.run_id);
 	if (trace_result.ok) {
 		console.log(formatTrace(trace_result.value));

@@ -22,6 +22,7 @@ export type RunInfo = {
 
 export type RunbookClient = {
 	listWorkflows: () => Promise<Result<WorkflowInfo[], ClientError>>;
+	listRuns: () => Promise<Result<RunInfo[], ClientError>>;
 	submitRun: (workflow_id: string, input: unknown) => Promise<Result<{ run_id: string }, ClientError>>;
 	getRunStatus: (run_id: string) => Promise<Result<RunInfo, ClientError>>;
 	getRunTrace: (run_id: string) => Promise<Result<Trace, ClientError>>;
@@ -51,6 +52,12 @@ export function createRunbookClient(base_url: string): RunbookClient {
 			const result = await request<{ workflows: WorkflowInfo[] }>("/workflows");
 			if (!result.ok) return result;
 			return ok(result.value.workflows);
+		},
+
+		async listRuns() {
+			const result = await request<{ runs: RunInfo[] }>("/runs");
+			if (!result.ok) return result;
+			return ok(result.value.runs);
 		},
 
 		async submitRun(workflow_id, input) {

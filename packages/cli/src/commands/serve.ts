@@ -1,5 +1,11 @@
 import type { Workflow } from "@f0rbit/runbook";
-import { createEngine, createInMemoryStateStore, createServer, resolveProviders } from "@f0rbit/runbook-server";
+import {
+	createEngine,
+	createInMemoryStateStore,
+	createServer,
+	resolveProviders,
+	verifyProviders,
+} from "@f0rbit/runbook-server";
 import { loadConfig } from "../config";
 
 export async function handleServe(args: string[]): Promise<void> {
@@ -19,6 +25,21 @@ export async function handleServe(args: string[]): Promise<void> {
 	if (!provider_result.ok) {
 		console.error("Provider init error:", provider_result.error);
 		process.exit(1);
+	}
+
+	// Verify agent provider connectivity
+	if (provider_result.value.agent) {
+		const agent_url = config.providers?.agent?.base_url ?? "local";
+		console.log(`Checking agent provider (opencode @ ${agent_url})...`);
+		const verify_result = await verifyProviders(provider_result.value);
+		if (!verify_result.ok) {
+			console.error(
+				`Agent provider unreachable after ${verify_result.error.attempts} attempts: ${verify_result.error.cause}`,
+			);
+			console.error("Is OpenCode running? Start it with: opencode serve");
+			process.exit(1);
+		}
+		console.log("Agent provider: connected");
 	}
 
 	const working_directory = config.working_directory ?? process.cwd();

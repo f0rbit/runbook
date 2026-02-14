@@ -97,7 +97,12 @@ describe("formatRunStatus", () => {
 			workflow_id: "deploy",
 			status: "failure",
 			input: {},
-			error: { kind: "step_failed" },
+			error: {
+				kind: "step_failed",
+				step_id: "deploy-step",
+				error: { kind: "execution_error", step_id: "deploy-step", cause: "deploy failed" },
+				trace: { run_id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", workflow_id: "deploy", events: [] },
+			},
 			started_at: "2025-01-15T10:00:00Z",
 			completed_at: "2025-01-15T10:00:02Z",
 		};

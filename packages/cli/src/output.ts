@@ -77,7 +77,7 @@ export function formatRunStatus(run: RunInfo): string {
 	}
 
 	if (run.error) {
-		lines.push(`  Error:    ${RED}${formatErrorKind(run.error)}${RESET}`);
+		lines.push(`  Error:    ${formatError(run.error)}`);
 	}
 
 	return lines.join("\n");
@@ -157,13 +157,6 @@ function formatStepError(error: StepError): string {
 		case "checkpoint_rejected":
 			return "checkpoint rejected";
 	}
-}
-
-function formatErrorKind(error: unknown): string {
-	if (error && typeof error === "object" && "kind" in error) {
-		return String((error as { kind: string }).kind);
-	}
-	return String(error);
 }
 
 export function formatError(error: unknown): string {
