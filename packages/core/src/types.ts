@@ -292,6 +292,21 @@ export type RunResult<O> = {
 	duration_ms: number;
 };
 
+/** Snapshot of a run's progress, sufficient to resume after restart */
+export type RunSnapshot = {
+	run_id: string;
+	workflow_id: string;
+	input: unknown;
+	/** Map of step_id -> output for completed steps */
+	completed_steps: Map<string, unknown>;
+	/** The step_id where execution should resume */
+	resume_at: string;
+	/** The checkpoint prompt (for re-registering) */
+	checkpoint_prompt?: string;
+	/** Original trace events (for continuity) */
+	trace_events: TraceEvent[];
+};
+
 export type EngineHandle = {
 	run: <I, O>(
 		workflow: Workflow<I, O>,

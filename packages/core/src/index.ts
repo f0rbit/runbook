@@ -45,6 +45,7 @@ export type {
 	ProviderConfig,
 	RunbookConfig,
 	RunResult,
+	RunSnapshot,
 	RunState,
 	ServerConfig,
 	ShellError,

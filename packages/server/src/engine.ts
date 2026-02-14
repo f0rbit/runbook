@@ -10,6 +10,7 @@ import type {
 	CheckpointProvider,
 	MapperFn,
 	RunResult,
+	RunSnapshot,
 	ShellProvider,
 	Step,
 	StepContext,
@@ -36,6 +37,8 @@ export type RunOpts = {
 	signal?: AbortSignal;
 	on_trace?: (event: TraceEvent) => void;
 	checkpoint?: CheckpointProvider;
+	/** If set, skip steps whose output is already known */
+	snapshot?: RunSnapshot;
 };
 
 export type Engine = {
@@ -95,6 +98,18 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 				}
 
 				if (node.type === "sequential") {
+					if (opts?.snapshot?.completed_steps.has(node.step.id)) {
+						const stored_output = opts.snapshot.completed_steps.get(node.step.id);
+						trace.emit({
+							type: "step_skipped",
+							step_id: node.step.id,
+							reason: "replayed from snapshot",
+							timestamp: new Date(),
+						});
+						previous_output = stored_output;
+						continue;
+					}
+
 					const result = await executeStep(
 						node.step,
 						node.mapper,
@@ -129,6 +144,24 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 					}
 					previous_output = result.value;
 				} else {
+					if (opts?.snapshot) {
+						const snapshot = opts.snapshot;
+						const all_stored = node.branches.every((b) => snapshot.completed_steps.has(b.step.id));
+						if (all_stored) {
+							const outputs = node.branches.map((b) => snapshot.completed_steps.get(b.step.id));
+							for (const branch of node.branches) {
+								trace.emit({
+									type: "step_skipped",
+									step_id: branch.step.id,
+									reason: "replayed from snapshot",
+									timestamp: new Date(),
+								});
+							}
+							previous_output = outputs;
+							continue;
+						}
+					}
+
 					const parallel_controller = new AbortController();
 					const parent_signal = opts?.signal;
 					if (parent_signal?.aborted) parallel_controller.abort();
