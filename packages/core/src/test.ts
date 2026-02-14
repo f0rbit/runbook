@@ -70,6 +70,10 @@ export class InMemoryAgentExecutor implements AgentExecutor {
 	async destroySession(_session_id: string): Promise<Result<void, AgentError>> {
 		return ok(undefined);
 	}
+
+	async healthCheck(): Promise<Result<void, AgentError>> {
+		return ok(undefined);
+	}
 }
 
 export class InMemoryCheckpointProvider implements CheckpointProvider {

@@ -116,6 +116,18 @@ export class OpenCodeExecutor implements AgentExecutor {
 	async destroySession(_session_id: string): Promise<Result<void, AgentError>> {
 		return ok(undefined);
 	}
+
+	async healthCheck(): Promise<Result<void, AgentError>> {
+		try {
+			await this.client.session.list();
+			return ok(undefined);
+		} catch (e) {
+			return err({
+				kind: "connection_failed",
+				cause: e instanceof Error ? e.message : String(e),
+			});
+		}
+	}
 }
 
 function extractText(parts: any[]): string {

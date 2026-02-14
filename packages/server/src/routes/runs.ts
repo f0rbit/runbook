@@ -18,6 +18,12 @@ function serializeRun(run: RunState) {
 export function runRoutes(deps: RunDeps) {
 	const app = new Hono();
 
+	app.get("/runs", (c) => {
+		const runs = deps.state.list();
+		const sorted = runs.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
+		return c.json({ runs: sorted.map(serializeRun) });
+	});
+
 	app.get("/runs/:id", (c) => {
 		const run = deps.state.get(c.req.param("id"));
 		if (!run) return c.json({ error: "run_not_found" }, 404);
@@ -27,7 +33,7 @@ export function runRoutes(deps: RunDeps) {
 	app.get("/runs/:id/trace", (c) => {
 		const run = deps.state.get(c.req.param("id"));
 		if (!run) return c.json({ error: "run_not_found" }, 404);
-		return c.json(run.trace);
+		return c.json({ trace: run.trace });
 	});
 
 	app.get("/runs/:id/events", (c) => {

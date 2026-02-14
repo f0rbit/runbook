@@ -117,7 +117,8 @@ describe("server api", () => {
 		const res = await app.request(`/runs/${run_id}/trace`);
 		expect(res.status).toBe(200);
 
-		const trace = await res.json();
+		const body = await res.json();
+		const trace = body.trace;
 		expect(trace.run_id).toBe(run_id);
 		expect(trace.workflow_id).toBe("echo-workflow");
 		expect(trace.events.length).toBeGreaterThan(0);

@@ -117,6 +117,7 @@ export type AgentExecutor = {
 	prompt: (session_id: string, opts: PromptOpts) => Promise<Result<AgentResponse, AgentError>>;
 	subscribe?: (session_id: string, handler: (event: AgentEvent) => void) => () => void;
 	destroySession?: (session_id: string) => Promise<Result<void, AgentError>>;
+	healthCheck?: () => Promise<Result<void, AgentError>>;
 };
 
 // --- Trace types ---
