@@ -129,3 +129,42 @@ describe("server api", () => {
 		expect(event_types).toContain("workflow_complete");
 	});
 });
+
+describe("GET /runs", () => {
+	test("returns empty list when no runs exist", async () => {
+		const { app } = setup();
+		const res = await app.request("/runs");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.runs).toEqual([]);
+	});
+
+	test("returns runs sorted by started_at descending", async () => {
+		const { app } = setup();
+
+		// Submit two runs
+		const res1 = await app.request("/workflows/echo-workflow/run", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ input: { message: "first" } }),
+		});
+		const { run_id: id1 } = await res1.json();
+
+		// Small delay to ensure different timestamps
+		await new Promise((r) => setTimeout(r, 50));
+
+		const res2 = await app.request("/workflows/echo-workflow/run", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ input: { message: "second" } }),
+		});
+		const { run_id: id2 } = await res2.json();
+
+		const list_res = await app.request("/runs");
+		const body = await list_res.json();
+		expect(body.runs.length).toBeGreaterThanOrEqual(2);
+		// Most recent should be first
+		const ids = body.runs.map((r: any) => r.run_id);
+		expect(ids.indexOf(id2)).toBeLessThan(ids.indexOf(id1));
+	});
+});
