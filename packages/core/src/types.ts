@@ -81,6 +81,7 @@ export type AgentSession = {
 
 export type PromptOpts = {
 	text: string;
+	system_prompt?: string;
 	model?: { provider_id: string; model_id: string };
 	agent_type?: string;
 	timeout_ms?: number;

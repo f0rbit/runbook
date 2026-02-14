@@ -410,8 +410,14 @@ async function executeAgentStep(
 		timestamp: new Date(),
 	});
 
+	const final_prompt_text =
+		mode === "analyze"
+			? `${prompt_text}\n\nIMPORTANT: Your final response MUST be a JSON object matching the required schema. Do not include any other text outside the JSON.`
+			: prompt_text;
+
 	const response_result = await executor.prompt(session.id, {
-		text: prompt_text,
+		text: final_prompt_text,
+		system_prompt,
 		model: agent_opts?.model,
 		agent_type: agent_opts?.agent_type,
 		timeout_ms: agent_opts?.timeout_ms,
