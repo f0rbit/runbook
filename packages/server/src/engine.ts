@@ -123,8 +123,14 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 					}
 					previous_output = result.value;
 				} else {
-					const promises = node.branches.map((branch) =>
-						executeStep(
+					const parallel_controller = new AbortController();
+					const parent_signal = opts?.signal;
+					if (parent_signal?.aborted) parallel_controller.abort();
+					parent_signal?.addEventListener("abort", () => parallel_controller.abort(), { once: true });
+
+					const branch_results: Result<unknown, StepError>[] = [];
+					const branch_promises = node.branches.map(async (branch, i) => {
+						const result = await executeStep(
 							branch.step,
 							branch.mapper,
 							workflow_input,
@@ -133,18 +139,23 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 								workflow_id: workflow.id,
 								run_id,
 								trace,
-								signal: opts?.signal ?? new AbortController().signal,
+								signal: parallel_controller.signal,
 								engine,
 							},
 							engine_opts,
-						),
-					);
+						);
+						if (!result.ok) {
+							parallel_controller.abort();
+						}
+						branch_results[i] = result;
+						return result;
+					});
 
-					const results = await Promise.all(promises);
+					await Promise.allSettled(branch_promises);
+
 					const outputs: unknown[] = [];
-
-					for (let i = 0; i < results.length; i++) {
-						const result = results[i];
+					for (let i = 0; i < branch_results.length; i++) {
+						const result = branch_results[i];
 						if (!result.ok) {
 							const branch = node.branches[i];
 							const wf_error = errors.step_failed(
@@ -272,6 +283,7 @@ async function executeStep(
 			const command = step.kind.command(input_parsed.data);
 			const shell_result = await shell_provider.exec(command, {
 				cwd: engine_opts.working_directory,
+				signal: ctx_base.signal,
 			});
 			if (!shell_result.ok) {
 				result = err(errors.shell(step.id, command, -1, shell_result.error.cause));
@@ -403,7 +415,12 @@ async function executeAgentStep(
 		model: agent_opts?.model,
 		agent_type: agent_opts?.agent_type,
 		timeout_ms: agent_opts?.timeout_ms,
+		signal: ctx.signal,
 	});
+
+	// Clean up session (fire-and-forget)
+	executor.destroySession?.(session.id).catch(() => {});
+
 	if (!response_result.ok) return err(errors.agent(step.id, agentErrorMessage(response_result.error)));
 
 	const response: AgentResponse = response_result.value;
