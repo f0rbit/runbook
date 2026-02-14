@@ -1,10 +1,12 @@
 import type { RunState } from "@f0rbit/runbook";
+import type { GitArtifactStore } from "@f0rbit/runbook-git-store";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { RunStateStore } from "../state";
 
 export type RunDeps = {
 	state: RunStateStore;
+	git_store?: GitArtifactStore;
 };
 
 function serializeRun(run: RunState) {
@@ -22,6 +24,22 @@ export function runRoutes(deps: RunDeps) {
 		const runs = deps.state.list();
 		const sorted = runs.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
 		return c.json({ runs: sorted.map(serializeRun) });
+	});
+
+	app.get("/runs/history", async (c) => {
+		if (!deps.git_store) {
+			return c.json({ runs: [], source: "git" });
+		}
+
+		const limit = c.req.query("limit") ? Number.parseInt(c.req.query("limit")!, 10) : undefined;
+		const workflow_id = c.req.query("workflow_id") ?? undefined;
+
+		const result = await deps.git_store.list({ limit, workflow_id });
+		if (!result.ok) {
+			return c.json({ error: "git_store_error", detail: result.error }, 500);
+		}
+
+		return c.json({ runs: result.value, source: "git" });
 	});
 
 	app.get("/runs/:id", (c) => {

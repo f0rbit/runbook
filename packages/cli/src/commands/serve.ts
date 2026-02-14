@@ -1,4 +1,7 @@
 import type { Workflow } from "@f0rbit/runbook";
+import type { GitArtifactStore } from "@f0rbit/runbook-git-store";
+import { createGitArtifactStore } from "@f0rbit/runbook-git-store";
+import type { RunStateStore } from "@f0rbit/runbook-server";
 import {
 	createEngine,
 	createInMemoryStateStore,
@@ -52,7 +55,40 @@ export async function handleServe(args: string[]): Promise<void> {
 		(config.workflows ?? []).map((wf: Workflow<unknown, unknown>) => [wf.id, wf] as const),
 	);
 
-	const app = createServer({ engine, state, workflows });
+	let git_store: GitArtifactStore | undefined;
+	if (config.artifacts?.git) {
+		git_store = createGitArtifactStore(working_directory);
+		await hydrateFromGitStore(git_store, state);
+	}
+
+	const app = createServer({ engine, state, workflows, git_store });
 	Bun.serve({ fetch: app.fetch, port });
 	console.log(`Runbook server listening on http://localhost:${port}`);
+}
+
+async function hydrateFromGitStore(git_store: GitArtifactStore, state: RunStateStore): Promise<void> {
+	const list_result = await git_store.list();
+	if (!list_result.ok) {
+		console.warn("[runbook] git-store hydration failed:", list_result.error);
+		return;
+	}
+
+	let hydrated = 0;
+	for (const info of list_result.value) {
+		const trace_result = await git_store.getTrace(info.run_id);
+		if (!trace_result.ok) continue;
+
+		state.create(info.run_id, info.workflow_id, undefined);
+		state.update(info.run_id, {
+			status: info.status,
+			trace: trace_result.value,
+			started_at: info.started_at,
+			completed_at: new Date(info.started_at.getTime() + info.duration_ms),
+		});
+		hydrated++;
+	}
+
+	if (hydrated > 0) {
+		console.log(`Hydrated ${hydrated} runs from git-store`);
+	}
 }

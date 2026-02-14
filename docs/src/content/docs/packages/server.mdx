@@ -1,0 +1,241 @@
+---
+title: "@f0rbit/runbook-server"
+description: "Full API reference for the server package — engine, providers, HTTP server, and state management."
+---
+
+The server package runs the workflow execution engine and exposes an HTTP API. Published as `@f0rbit/runbook-server` on npm.
+
+```bash
+bun add @f0rbit/runbook-server
+```
+
+---
+
+## Engine
+
+```typescript
+import { createEngine } from "@f0rbit/runbook-server";
+```
+
+### `createEngine`
+
+```typescript
+function createEngine(opts: EngineOpts): Engine
+```
+
+Creates the workflow execution engine. The engine dispatches step execution to providers — it never calls `Bun.spawn` or `fetch` directly.
+
+```typescript
+const engine = createEngine({
+  providers: {
+    shell: new BunShellProvider(),
+    agent: new OpenCodeExecutor({ model: "claude-sonnet" }),
+    checkpoint: createServerCheckpointProvider(registry),
+  },
+  working_directory: "/path/to/project",
+});
+
+const handle = engine.run(workflow, input, opts);
+```
+
+### `Engine` (type)
+
+Engine instance. Primary method:
+
+| Method | Signature |
+|--------|-----------|
+| `run` | `(workflow: Workflow, input: unknown, opts?: RunOpts) => EngineHandle` |
+
+### `EngineOpts` (type)
+
+```typescript
+type EngineOpts = {
+  providers: {
+    shell?: ShellProvider;
+    agent?: AgentExecutor;
+    checkpoint?: CheckpointProvider;
+  };
+  working_directory?: string;
+};
+```
+
+The `working_directory` propagates to shell `opts.cwd` and agent `createSession` calls.
+
+### `RunOpts` (type)
+
+Options passed to `engine.run()` for controlling execution behavior (run ID, trace collector, abort signal).
+
+---
+
+## Providers
+
+```typescript
+import {
+  BunShellProvider,
+  OpenCodeExecutor,
+  createServerCheckpointProvider,
+  resolveProviders,
+  verifyProviders,
+} from "@f0rbit/runbook-server";
+```
+
+### `BunShellProvider`
+
+Real shell provider using `Bun.spawn`. Executes commands in a subprocess with configurable working directory and environment.
+
+```typescript
+const shell = new BunShellProvider();
+const result = await shell.exec("tsc --noEmit", { cwd: "/my/project" });
+// result: { stdout: string, stderr: string, exit_code: number }
+```
+
+### `OpenCodeExecutor`
+
+Agent executor implementation for the [OpenCode](https://opencode.ai) agent. Manages sessions, prompts, and tool calls.
+
+```typescript
+const executor = new OpenCodeExecutor(opts);
+const session = await executor.createSession({ working_directory: "/project" });
+const response = await executor.prompt(session, "analyze this code", { mode: "analyze" });
+```
+
+### `OpenCodeExecutorOpts` (type)
+
+```typescript
+type OpenCodeExecutorOpts = {
+  model?: string;
+};
+```
+
+### `createServerCheckpointProvider`
+
+Creates a checkpoint provider that bridges the engine's pause/resume flow with the HTTP endpoint. When a checkpoint step executes, the engine pauses and the server exposes a `POST` endpoint for external resolution. The CLI prompts stdin and sends the response.
+
+```typescript
+const registry: PendingCheckpointRegistry = new Map();
+const checkpoint = createServerCheckpointProvider(registry);
+```
+
+### `PendingCheckpointRegistry` (type)
+
+Registry that tracks pending checkpoints. Maps run/step IDs to their resolve/reject callbacks so the HTTP endpoint can complete them.
+
+### `resolveProviders`
+
+```typescript
+function resolveProviders(config: ProviderConfig): ResolvedProviders
+```
+
+Creates real provider instances from a `ProviderConfig` object. Always creates a `BunShellProvider`. Creates an `OpenCodeExecutor` when `agent.type === "opencode"`.
+
+```typescript
+const providers = resolveProviders({
+  agent: { type: "opencode" },
+});
+// providers.shell  → BunShellProvider
+// providers.agent  → OpenCodeExecutor
+```
+
+### `verifyProviders`
+
+```typescript
+function verifyProviders(
+  providers: ResolvedProviders,
+  workflow: Workflow
+): Result<void, VerifyError>
+```
+
+Checks that all required providers exist for a workflow's step types. Returns an error if a workflow contains `agent` steps but no `AgentExecutor` is configured, for example.
+
+### `ResolvedProviders` (type)
+
+Result of `resolveProviders`. Contains the instantiated provider objects.
+
+### `ResolveError` (type)
+
+Error returned when provider resolution fails (e.g., unknown agent type).
+
+### `VerifyError` (type)
+
+Error returned when a workflow requires providers that aren't configured.
+
+---
+
+## Server
+
+```typescript
+import { createServer } from "@f0rbit/runbook-server";
+```
+
+### `createServer`
+
+```typescript
+function createServer(deps: ServerDeps): Hono
+```
+
+Creates a [Hono](https://hono.dev) HTTP server with the following routes:
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/runs` | Submit a new workflow run |
+| `GET` | `/runs/:id` | Get run status |
+| `GET` | `/runs/:id/trace` | Get run trace |
+| `GET` | `/runs/:id/events` | SSE stream of trace events |
+| `POST` | `/runs/:id/checkpoints/:step` | Resolve a pending checkpoint |
+| `POST` | `/runs/:id/cancel` | Cancel a running workflow |
+| `GET` | `/workflows` | List registered workflows |
+
+### `ServerDeps` (type)
+
+Dependencies injected into the server:
+
+```typescript
+type ServerDeps = {
+  engine: Engine;
+  state: RunStateStore;
+  workflows: Map<string, Workflow>;
+  checkpoint_registry: PendingCheckpointRegistry;
+};
+```
+
+### API Tests
+
+Server API tests use `app.request()` directly — no real HTTP server is started:
+
+```typescript
+const app = createServer(deps);
+const res = await app.request("/workflows", { method: "GET" });
+const data = await res.json();
+```
+
+---
+
+## State
+
+```typescript
+import { createInMemoryStateStore } from "@f0rbit/runbook-server";
+```
+
+### `createInMemoryStateStore`
+
+```typescript
+function createInMemoryStateStore(): RunStateStore
+```
+
+Creates an in-memory state store for tracking run states. This is the v0.1 implementation — no persistence across server restarts.
+
+```typescript
+const state = createInMemoryStateStore();
+await state.set(run_id, { status: "running", ... });
+const run = await state.get(run_id);
+```
+
+### `RunStateStore` (type)
+
+Interface for run state persistence:
+
+| Method | Signature |
+|--------|-----------|
+| `get` | `(run_id: string) => Promise<RunState \| undefined>` |
+| `set` | `(run_id: string, state: RunState) => Promise<void>` |
+| `list` | `() => Promise<RunState[]>` |

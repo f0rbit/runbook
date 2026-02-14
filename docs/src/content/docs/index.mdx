@@ -1,19 +1,70 @@
 ---
 title: "@f0rbit/runbook"
 description: "Typed workflow engine for orchestrating AI agents, shell commands, and human checkpoints."
+template: splash
 ---
 
 # @f0rbit/runbook
 
-Typed workflow engine for orchestrating AI agents, shell commands, and human checkpoints.
+### Typed workflow engine for orchestrating AI agents, shell commands, and human checkpoints
+
+Define workflows as typed pipelines. Wire AI agents, shell commands, and human checkpoints into composable steps — with Zod schemas enforcing correctness at every boundary.
+
+---
 
 ## Features
 
-- **Type-safe pipelines** — Zod schemas at every boundary
-- **4 step types** — fn(), shell(), agent(), checkpoint()
-- **Agent orchestration** — dispatch to AI coding agents with typed I/O
-- **Composable workflows** — pipe(), parallel(), asStep()
-- **In-memory testing** — Provider pattern replaces all external I/O
-- **Git artifact store** — trace storage in git refs
+### Type Safety
 
-[Get Started](/runbook/getting-started/installation/) | [Quick Start](/runbook/getting-started/quick-start/)
+Zod schemas at every step boundary. Mis-wired pipelines fail at compile time, not runtime.
+
+### Agent Steps
+
+AI agents as first-class workflow steps with typed I/O. Analyze mode for JSON output, build mode for code generation.
+
+### Testable
+
+In-memory providers for instant, deterministic tests. No mocking, no network calls, no API costs.
+
+### Traces
+
+Typed event streams, not string logs. 14 event types covering workflow lifecycle, agent sessions, and checkpoints.
+
+### Git Store
+
+Every prompt, response, and tool call stored in git refs. Invisible to `git log`, pushable/pullable.
+
+### Composable
+
+`pipe()`, `parallel()`, `asStep()`. Build complex workflows from simple, reusable pieces.
+
+---
+
+## Quick Example
+
+A minimal workflow that dispatches to an AI agent with fully typed input and output:
+
+```typescript
+import { agent, defineWorkflow } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: z.object({ issues: z.array(z.string()), severity: z.enum(["low", "medium", "high"]) }),
+  prompt: (input) => `Analyze this code:\n${input.code}`,
+});
+
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .pipe(analyze, (wf) => ({ code: wf.code }))
+  .done("code-review", z.object({ issues: z.array(z.string()), severity: z.enum(["low", "medium", "high"]) }));
+```
+
+---
+
+## Learn More
+
+- [Get Started](/runbook/getting-started/installation/) — Install and set up
+- [Quick Start](/runbook/getting-started/quick-start/) — Build your first workflow
+- [Concepts](/runbook/concepts/steps/) — Learn the fundamentals
+- [API Reference](/runbook/packages/core/) — Full package documentation

@@ -1,0 +1,202 @@
+---
+title: "Workflows"
+description: "Compose steps into typed pipelines with pipe(), parallel fan-out/fan-in, sub-workflows via asStep(), and full compile-time type safety."
+---
+
+# Workflows
+
+Workflows are typed pipelines that chain steps together. Data flows through the pipeline with full type safety — mis-wired connections fail at compile time, not runtime.
+
+## defineWorkflow()
+
+Creates a new workflow builder. Takes a Zod schema that defines the workflow's input type.
+
+```typescript
+function defineWorkflow<WI>(input: z.ZodType<WI>): WorkflowBuilder<WI, WI>
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `input` | `z.ZodType<WI>` | Zod schema for the workflow's input |
+
+**Returns:** A `WorkflowBuilder<WI, WI>` where both type parameters start as the workflow input type.
+
+```typescript
+import { defineWorkflow } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const builder = defineWorkflow(z.object({ url: z.string() }));
+```
+
+---
+
+## WorkflowBuilder methods
+
+### pipe()
+
+Add a step to the pipeline with a mapper function that wires the data flow.
+
+```typescript
+pipe<I, O>(
+  step: Step<I, O>,
+  mapper: (workflow_input: WI, previous_output: LastO) => I
+): WorkflowBuilder<WI, O>
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `step` | `Step<I, O>` | The step to add |
+| `mapper` | `(workflow_input: WI, previous_output: LastO) => I` | Maps available data to the step's input |
+
+The mapper function receives two arguments:
+
+1. **`workflow_input`** — the original workflow input, always available
+2. **`previous_output`** — the output of the previous step in the pipeline
+
+For the first `pipe()` call, `previous_output` is the workflow input itself (since there's no prior step).
+
+```typescript
+const workflow = defineWorkflow(z.object({ url: z.string() }))
+  .pipe(fetch_step, (wf_input) => ({ url: wf_input.url }))
+  .pipe(parse_step, (_wf_input, prev) => ({ html: prev.body }))
+  .pipe(summarize_step, (_wf_input, prev) => ({ text: prev.content }))
+  .done("scrape-pipeline", SummarySchema);
+```
+
+Each `pipe()` call returns a new builder with updated type parameters — the output type tracks through the chain, so every mapper is fully typed.
+
+### parallel()
+
+Fan-out to multiple steps simultaneously, then fan-in with a tuple of all outputs.
+
+```typescript
+parallel<T extends readonly ParallelStepDef[]>(
+  ...defs: T
+): WorkflowBuilder<WI, ParallelOutputTuple<T>>
+```
+
+Each definition is a `[step, mapper]` tuple. All steps execute concurrently, and the result is a typed tuple matching the order of the definitions.
+
+```typescript
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .parallel(
+    [lint_step, (wf) => ({ path: wf.code })],
+    [test_step, (wf) => ({ path: wf.code })],
+    [typecheck_step, (wf) => ({ path: wf.code })],
+  )
+  .pipe(merge_step, (_wf, [lint, test, types]) => ({
+    lint_ok: lint.clean,
+    tests_pass: test.passed,
+    types_ok: types.clean,
+  }))
+  .done("ci-pipeline", MergedResultSchema);
+```
+
+The tuple type is preserved — `[lint, test, types]` destructures with full type information for each parallel step's output.
+
+### done()
+
+Finalize the workflow with an ID and output schema.
+
+```typescript
+done(id: string, output: z.ZodType<LastO>): Workflow<WI, LastO>
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Unique workflow identifier |
+| `output` | `z.ZodType<LastO>` | Zod schema matching the last step's output type |
+
+**Returns:** A `Workflow<WI, LastO>` object ready to be executed by the engine or composed into other workflows.
+
+```typescript
+const workflow = defineWorkflow(z.object({ name: z.string() }))
+  .pipe(greet_step, (wf) => ({ name: wf.name }))
+  .done("hello-world", z.object({ greeting: z.string() }));
+```
+
+---
+
+## Sub-workflows with asStep()
+
+Any workflow can be wrapped as a step for composition in another workflow.
+
+```typescript
+workflow.asStep(): Step<WI, LastO>
+```
+
+**Returns:** A `Step<WI, LastO>` that can be used in `pipe()` or `parallel()` calls. When executed, the sub-workflow runs through the engine with inherited providers.
+
+```typescript
+const inner = defineWorkflow(z.object({ file: z.string() }))
+  .pipe(read_step, (wf) => ({ path: wf.file }))
+  .pipe(process_step, (_wf, prev) => ({ content: prev.text }))
+  .done("inner-wf", OutputSchema);
+
+const outer = defineWorkflow(z.object({ files: z.array(z.string()) }))
+  .pipe(inner.asStep(), (wf) => ({ file: wf.files[0] }))
+  .done("outer-wf", OutputSchema);
+```
+
+Sub-workflows inherit the parent engine's providers via `ctx.engine.run()`. Do not create a new engine inside `fn()` steps — use the inherited one.
+
+---
+
+## Type safety
+
+The workflow builder tracks types through every step. Mis-wired pipelines fail at compile time:
+
+```typescript
+const step_a = fn({
+  id: "a",
+  input: z.object({ url: z.string() }),
+  output: z.object({ result: z.string() }),
+  run: async (input) => ok({ result: "done" }),
+});
+
+const step_b = fn({
+  id: "b",
+  input: z.object({ files: z.array(z.string()) }),
+  output: z.object({ count: z.number() }),
+  run: async (input) => ok({ count: input.files.length }),
+});
+
+defineWorkflow(z.object({ url: z.string() }))
+  .pipe(step_a, (wf) => ({ url: wf.url }))
+  .pipe(step_b, (_wf, prev) => ({ files: prev.files }));
+  //                                       ^^^^^ TypeScript error:
+  //                     Property 'files' does not exist on type '{ result: string }'
+```
+
+This ensures:
+
+- Every mapper returns the correct shape for the next step's input schema
+- The workflow input type is available throughout the chain
+- Parallel step outputs are correctly typed as a tuple
+- Sub-workflow types compose correctly through `asStep()`
+
+---
+
+## Execution
+
+Workflows are executed by the engine:
+
+```typescript
+import { createEngine } from "@f0rbit/runbook-server";
+
+const engine = createEngine({
+  providers: { shell: new BunShellProvider() },
+});
+
+const result = await engine.run(workflow, { url: "https://example.com" });
+
+if (result.ok) {
+  console.log(result.value.output);      // Fully typed workflow output
+  console.log(result.value.trace);       // Typed event stream
+  console.log(result.value.duration_ms); // Execution time
+} else {
+  console.error(result.error);           // Typed WorkflowError
+}
+```
+
+Results use `Result<T, E>` from `@f0rbit/corpus`. No exceptions — errors are values.

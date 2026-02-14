@@ -1,0 +1,101 @@
+---
+title: "Quick Start"
+description: "Build your first runbook workflow — define an agent step with Zod schemas, compose it into a pipeline, and run it."
+---
+
+# Quick Start
+
+This guide walks you through building a code review workflow that sends code to an AI agent and returns typed, validated results.
+
+## Install
+
+```bash
+bun add @f0rbit/runbook @f0rbit/runbook-server zod @f0rbit/corpus
+```
+
+## Define an agent step
+
+Every step starts with Zod schemas that define its input and output. The engine validates data at every boundary — if a schema doesn't match, you get a typed error, not a runtime crash.
+
+```typescript
+import { agent, defineWorkflow } from "@f0rbit/runbook";
+import { createEngine } from "@f0rbit/runbook-server";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const IssueSchema = z.object({
+  issues: z.array(z.string()),
+  severity: z.enum(["low", "medium", "high"]),
+});
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: IssueSchema,
+  prompt: (input) => `Analyze this code for issues:\n${input.code}`,
+});
+```
+
+Breaking this down:
+
+- **`id`** — unique identifier for the step, used in traces and logs
+- **`input`** — Zod schema defining what data the step accepts
+- **`output`** — Zod schema defining what the agent must return (validated at runtime)
+- **`prompt`** — function that receives the validated input and generates the agent instruction
+
+The `agent()` builder creates a step that dispatches to an `AgentExecutor` provider. The agent's response is parsed and validated against the output schema automatically.
+
+## Define a workflow
+
+Chain steps into a pipeline using `pipe()`:
+
+```typescript
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .pipe(analyze, (wf_input) => ({ code: wf_input.code }))
+  .done("code-review", IssueSchema);
+```
+
+Three things happen here:
+
+1. **`defineWorkflow(schema)`** — creates a new workflow with a Zod schema for the workflow input
+2. **`.pipe(step, mapper)`** — adds a step to the pipeline. The mapper function receives `(workflow_input, previous_step_output)` and returns the input for the next step. For the first step there is no previous output, so only the workflow input is used.
+3. **`.done(id, schema)`** — finalizes the workflow with an ID and output schema. The output schema of the last step must match.
+
+You can chain multiple `.pipe()` calls — each step receives the workflow input and the output of the previous step, giving you full control over data flow.
+
+## Create an engine and run
+
+The engine dispatches each step to the appropriate provider. Agent steps need an `AgentExecutor`, shell steps need a `ShellProvider`, and so on.
+
+```typescript
+const engine = createEngine({ providers: { agent: myAgentExecutor } });
+const result = await engine.run(workflow, { code: "console.log('hello')" });
+```
+
+`createEngine()` accepts a providers object — pass in implementations for each step type your workflow uses. The engine never calls external APIs directly; everything goes through providers, which makes the system testable and swappable.
+
+## Inspect the result
+
+Results use the `Result<T, E>` pattern from `@f0rbit/corpus`. No exceptions — errors are values.
+
+```typescript
+if (result.ok) {
+  console.log(result.value.output);      // { issues: [...], severity: "low" }
+  console.log(result.value.trace);       // Full typed event stream
+  console.log(result.value.duration_ms); // Execution time
+} else {
+  console.error(result.error);           // Typed WorkflowError
+}
+```
+
+- **`result.ok`** — `true` on success, `false` on failure
+- **`result.value.output`** — the final workflow output, fully typed from the Zod schema
+- **`result.value.trace`** — a typed event stream capturing every step execution, timing, and agent interaction
+- **`result.value.duration_ms`** — total wall-clock execution time
+- **`result.error`** — on failure, a typed `WorkflowError` describing what went wrong and where
+
+## Next steps
+
+- [Steps reference](/runbook/concepts/steps/) — all four step types: `fn()`, `shell()`, `agent()`, `checkpoint()`
+- [Workflow composition](/runbook/concepts/workflows/) — `pipe()`, `parallel()`, and `asStep()` for sub-workflows
+- [Testing](/runbook/guides/testing/) — in-memory providers for testing workflows without external dependencies

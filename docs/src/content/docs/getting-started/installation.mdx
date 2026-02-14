@@ -1,0 +1,91 @@
+---
+title: "Installation"
+description: "Install @f0rbit/runbook packages and set up your development environment."
+---
+
+# Installation
+
+## Prerequisites
+
+Runbook requires the [Bun](https://bun.sh) runtime. Node.js is not supported in v0.1.
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+## Packages
+
+The project is split into focused packages — install only what you need.
+
+| Package | Description |
+|---------|-------------|
+| `@f0rbit/runbook` | Core SDK — types, step builders, workflow builder, trace types |
+| `@f0rbit/runbook-server` | Hono HTTP server — engine, providers, routes, state |
+| `@f0rbit/runbook-cli` | Thin CLI client — HTTP client, command handlers, config |
+| `@f0rbit/runbook-git-store` | Git-based artifact store for workflow traces and agent sessions |
+
+### Peer dependencies
+
+All packages expect `zod` and `@f0rbit/corpus` as peer dependencies:
+
+- **zod** — schema definitions and runtime validation
+- **@f0rbit/corpus** — `Result<T, E>` types for error handling without exceptions
+
+## Typical install
+
+Most users need the core SDK, the server (which includes the engine), and the peer dependencies:
+
+```bash
+bun add @f0rbit/runbook @f0rbit/runbook-server zod @f0rbit/corpus
+```
+
+Install the CLI globally to run workflows from the terminal:
+
+```bash
+bun add -g @f0rbit/runbook-cli
+```
+
+### Individual packages
+
+Install packages individually if you only need a subset:
+
+```bash
+# Core SDK only (for defining workflows and types)
+bun add @f0rbit/runbook
+
+# Server (engine + HTTP routes)
+bun add @f0rbit/runbook-server
+
+# CLI client
+bun add @f0rbit/runbook-cli
+
+# Git-based artifact store
+bun add @f0rbit/runbook-git-store
+```
+
+## Development setup
+
+For contributors working on the runbook project itself:
+
+```bash
+git clone https://github.com/f0rbit/runbook
+cd runbook
+bun install
+```
+
+The repository is a Bun workspace monorepo with packages under `packages/`. After installing, verify everything works:
+
+```bash
+# Type checking
+bun run typecheck
+
+# Run all tests
+bun test
+
+# Lint (uses Biome, not ESLint)
+bun run lint
+```
+
+## What's next
+
+Now that you have runbook installed, build your first workflow in the [Quick Start](/runbook/getting-started/quick-start/).

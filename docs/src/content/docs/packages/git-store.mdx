@@ -1,0 +1,276 @@
+---
+title: "@f0rbit/runbook-git-store"
+description: "Full API reference for the git-based artifact store — stores workflow traces and agent sessions under git refs."
+---
+
+Git-based artifact store for workflow traces and agent sessions. Published as `@f0rbit/runbook-git-store` on npm.
+
+```bash
+bun add @f0rbit/runbook-git-store
+```
+
+Runs are stored under `refs/runbook/runs/<run-id>` — invisible to `git log` since they live outside the normal commit graph. Uses raw git commands (`git hash-object`, `git mktree`, `git update-ref`) with no git library dependency.
+
+---
+
+## Factory Function
+
+```typescript
+import { createGitArtifactStore } from "@f0rbit/runbook-git-store";
+
+const store = createGitArtifactStore();
+```
+
+```typescript
+function createGitArtifactStore(): GitArtifactStore
+```
+
+Returns a `GitArtifactStore` instance. All methods accept an optional `cwd` parameter for targeting a specific git repository.
+
+---
+
+## GitArtifactStore Interface
+
+```typescript
+type GitArtifactStore = {
+  store: (run: StorableRun, opts?: StoreOpts) => Promise<Result<StoredRun, GitStoreError>>;
+  list: (opts?: ListOpts) => Promise<Result<StoredRunInfo[], GitStoreError>>;
+  getTrace: (run_id: string) => Promise<Result<Trace, GitStoreError>>;
+  getStepArtifacts: (run_id: string, step_id: string) => Promise<Result<StepArtifacts, GitStoreError>>;
+  linkToCommit: (run_id: string, commit_sha: string) => Promise<Result<void, GitStoreError>>;
+  push: (opts?: SyncOpts) => Promise<Result<SyncResult, GitStoreError>>;
+  pull: (opts?: SyncOpts) => Promise<Result<SyncResult, GitStoreError>>;
+};
+```
+
+All methods return `Result<T, GitStoreError>` — errors as values, never thrown.
+
+### `store`
+
+Write a completed run's artifacts to git refs.
+
+```typescript
+const result = await store.store({
+  run_id: "run-abc123",
+  workflow_id: "verify",
+  input: { task: "check types" },
+  output: { passed: true },
+  trace: collectedTrace,
+  duration_ms: 4200,
+  steps: [{ step_id: "tsc", input: {}, output: { exit_code: 0 } }],
+}, { commit_sha: "a1b2c3d", cwd: "/my/repo" });
+```
+
+### `list`
+
+List stored runs, optionally filtered by workflow ID.
+
+```typescript
+const result = await store.list({ limit: 10, workflow_id: "verify" });
+```
+
+### `getTrace`
+
+Retrieve the full typed trace for a run.
+
+```typescript
+const result = await store.getTrace("run-abc123");
+```
+
+### `getStepArtifacts`
+
+Retrieve artifacts for a specific step within a run.
+
+```typescript
+const result = await store.getStepArtifacts("run-abc123", "tsc");
+```
+
+### `linkToCommit`
+
+Associate a run with a git commit SHA. Updates the run's metadata to include the commit reference.
+
+```typescript
+await store.linkToCommit("run-abc123", "a1b2c3d4e5f6");
+```
+
+### `push`
+
+Push artifact refs to a remote repository.
+
+```typescript
+const result = await store.push({ remote: "origin" });
+// result: { refs_synced: 3, remote: "origin" }
+```
+
+### `pull`
+
+Pull artifact refs from a remote repository.
+
+```typescript
+const result = await store.pull({ remote: "origin" });
+```
+
+---
+
+## Types
+
+### `StorableRun`
+
+Input to `store()` — a completed run ready for persistence.
+
+```typescript
+type StorableRun = {
+  run_id: string;
+  workflow_id: string;
+  input: unknown;
+  output: unknown;
+  trace: Trace;
+  duration_ms: number;
+  steps?: Array<{
+    step_id: string;
+    input: unknown;
+    output: unknown;
+    prompt?: string;
+    response?: string;
+    iterations?: number;
+  }>;
+};
+```
+
+### `StoredRun`
+
+Result of a successful `store()` call.
+
+```typescript
+type StoredRun = {
+  run_id: string;
+  ref: string; // e.g. "refs/runbook/runs/run-abc123"
+};
+```
+
+### `StoredRunInfo`
+
+Summary returned by `list()`.
+
+```typescript
+type StoredRunInfo = {
+  run_id: string;
+  workflow_id: string;
+  status: string;
+  started_at: string;
+  duration_ms: number;
+  commit_sha?: string;
+};
+```
+
+### `StepArtifacts`
+
+Per-step data returned by `getStepArtifacts()`.
+
+```typescript
+type StepArtifacts = {
+  step_id: string;
+  input: unknown;
+  output: unknown;
+  prompt?: string;
+  response?: string;
+  iterations?: number;
+};
+```
+
+### `StoreOpts`
+
+Options for `store()`.
+
+```typescript
+type StoreOpts = {
+  commit_sha?: string;
+  cwd?: string;
+};
+```
+
+### `ListOpts`
+
+Options for `list()`.
+
+```typescript
+type ListOpts = {
+  limit?: number;
+  workflow_id?: string;
+  cwd?: string;
+};
+```
+
+### `SyncOpts`
+
+Options for `push()` and `pull()`.
+
+```typescript
+type SyncOpts = {
+  remote?: string; // default: "origin"
+  cwd?: string;
+};
+```
+
+### `SyncResult`
+
+Result of a successful `push()` or `pull()`.
+
+```typescript
+type SyncResult = {
+  refs_synced: number;
+  remote: string;
+};
+```
+
+### `GitStoreError`
+
+Discriminated union of error types:
+
+```typescript
+type GitStoreError =
+  | { kind: "git_not_found"; message: string }
+  | { kind: "ref_not_found"; run_id: string; message: string }
+  | { kind: "git_command_failed"; command: string; stderr: string; exit_code: number }
+  | { kind: "parse_error"; file: string; message: string };
+```
+
+| Kind | When |
+|------|------|
+| `git_not_found` | No git repository found at the target directory |
+| `ref_not_found` | The requested run ID has no stored ref |
+| `git_command_failed` | A raw git command exited with non-zero |
+| `parse_error` | Stored JSON failed to parse (corrupted artifact) |
+
+---
+
+## Ref Structure
+
+Each run is stored as a git tree under `refs/runbook/runs/<run-id>`:
+
+```
+refs/runbook/runs/<run-id>
+├── metadata.json        # workflow ID, input, output, timing, optional commit SHA
+├── trace.json           # full typed event stream
+└── steps/
+    └── <step-id>/
+        ├── input.json   # step input
+        ├── output.json  # step output
+        ├── prompt.txt   # agent/checkpoint prompt (if applicable)
+        └── response.txt # agent response (if applicable)
+```
+
+These refs are invisible to `git log` — they live outside the normal commit graph. The store uses low-level git commands to create blob objects, assemble trees, and update refs without creating commits in the main history.
+
+### How It Works
+
+1. **`git hash-object -w`** — writes each JSON/text file as a blob
+2. **`git mktree`** — assembles blobs into tree objects (nested for `steps/`)
+3. **`git update-ref`** — points `refs/runbook/runs/<run-id>` at the root tree
+4. **`git push/fetch`** — syncs refs using standard git refspecs
+
+This approach gives you:
+- **Zero impact** on your working tree and commit history
+- **Full git deduplication** for repeated content
+- **Standard git transport** for push/pull to remotes
+- **Garbage collection safety** — refs protect objects from `git gc`

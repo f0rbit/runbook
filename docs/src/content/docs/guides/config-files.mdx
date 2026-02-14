@@ -1,0 +1,228 @@
+---
+title: Configuration
+description: Configure workflows, providers, and runtime options with runbook.config.ts — project-local or global.
+---
+
+## Config File Structure
+
+Create `runbook.config.ts` in your project root:
+
+```typescript
+import {
+  defineConfig,
+  defineWorkflow,
+  fn,
+  agent,
+  shell,
+  checkpoint,
+} from "@f0rbit/runbook";
+import { z } from "zod";
+import { ok } from "@f0rbit/corpus";
+
+const hello = fn({
+  id: "hello",
+  input: z.object({ name: z.string() }),
+  output: z.object({ greeting: z.string() }),
+  run: async (input) => ok({ greeting: `Hello, ${input.name}!` }),
+});
+
+const workflow = defineWorkflow(z.object({ name: z.string() }))
+  .pipe(hello, (wf) => ({ name: wf.name }))
+  .done("hello-world", z.object({ greeting: z.string() }));
+
+export default defineConfig({
+  workflows: [workflow],
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  artifacts: { git: true },
+});
+```
+
+## defineConfig Fields
+
+### workflows
+
+Array of workflows that the server should register and make available:
+
+```typescript
+{
+  workflows: Workflow<any, any>[];
+}
+```
+
+### server
+
+```typescript
+{
+  server?: {
+    port?: number;  // default: 4400
+  };
+}
+```
+
+### providers
+
+Configure the real providers used at runtime:
+
+```typescript
+{
+  providers?: {
+    agent?: {
+      type: string;          // e.g. "opencode"
+      base_url?: string;     // agent executor URL
+      auto_approve?: boolean;
+    };
+  };
+}
+```
+
+The `resolveProviders(config)` function in the server package creates real providers from this config. It always creates a `BunShellProvider` for shell steps and creates the appropriate agent executor based on `agent.type`.
+
+### artifacts
+
+```typescript
+{
+  artifacts?: {
+    git?: boolean;  // enable git artifact store
+  };
+}
+```
+
+When enabled, every workflow run is automatically stored as git objects under `refs/runbook/runs/`. See the [Git Artifact Store](/guides/git-artifact-store) guide.
+
+### working_directory
+
+Optional string that propagates through the entire system:
+
+```typescript
+{
+  working_directory?: string;
+}
+```
+
+## Config Discovery
+
+The CLI and server find your config file using this priority order (first match wins):
+
+1. **`--config <path>` flag** — Explicit path to a config file
+2. **`runbook.config.ts` in cwd** — Project-local config
+3. **Walk up parent directories** — Find the nearest `runbook.config.ts`
+4. **`~/.config/runbook/runbook.config.ts`** — Global fallback
+
+Local configs always take precedence over global. The global fallback enables user-wide workflow definitions separate from project configs.
+
+```bash
+# Use explicit config
+runbook run my-workflow --config ./custom.config.ts
+
+# Uses runbook.config.ts from cwd or parent directories
+runbook run my-workflow
+
+# Falls back to ~/.config/runbook/runbook.config.ts if no local config found
+runbook run my-workflow
+```
+
+## Global Config
+
+Store personal workflows at `~/.config/runbook/runbook.config.ts` for workflows available everywhere:
+
+```typescript
+import {
+  defineConfig,
+  defineWorkflow,
+  agent,
+  shell,
+  fn,
+  checkpoint,
+} from "@f0rbit/runbook";
+import { z } from "zod";
+import { ok } from "@f0rbit/corpus";
+
+const question = defineWorkflow(z.object({ question: z.string() }))
+  .pipe(explore_step, (wf) => ({ query: wf.question }))
+  .done("question", AnswerSchema);
+
+export default defineConfig({
+  workflows: [question],
+  providers: {
+    agent: { type: "opencode" },
+  },
+});
+```
+
+## Workflow Patterns
+
+The config file is where you define your actual workflows. Common patterns:
+
+| Pattern | Description |
+|---------|-------------|
+| `verify` | Parallel shell steps (tsc + bun test + biome) merged with a fn step |
+| `question` | Single explore agent step in analyze mode |
+| `simple-change` | Coder agent (build mode) → verify sub-workflow → git commit |
+| `feature` | Explore → plan → checkpoint → dynamic phase execution |
+
+### Organizing Prompts and Schemas
+
+Agent system prompts and shared schemas can be stored alongside the config:
+
+```
+~/.config/runbook/
+  runbook.config.ts
+  prompts/
+    explorer.md
+    coder.md
+    planner.md
+  schemas/
+    common.ts
+```
+
+Reference prompts from agent steps using `system_prompt_file`:
+
+```typescript
+const explore = agent({
+  id: "explore",
+  input: ExploreInput,
+  output: ExploreOutput,
+  prompt: (input) => `Explore: ${input.query}`,
+  agent_opts: {
+    system_prompt_file: "./prompts/explorer.md",
+    agent_type: "explorer",
+  },
+});
+```
+
+Relative paths in `system_prompt_file` resolve against `working_directory`.
+
+## working_directory Propagation
+
+When set in config, `working_directory` flows through the entire system:
+
+```
+runbook.config.ts
+  └─ working_directory: "/path/to/project"
+       │
+       ├─ handleServe() reads it from config
+       │    └─ passes to createEngine()
+       │
+       ├─ Engine passes to shell steps as opts.cwd
+       │
+       ├─ Engine passes to agent createSession()
+       │    └─ agent works in the correct directory
+       │
+       └─ system_prompt_file relative paths
+            └─ resolve against working_directory
+```
+
+This ensures all steps — shell, agent, and fn — operate in the correct directory without each step needing to specify paths independently.
+
+```typescript
+export default defineConfig({
+  workflows: [workflow],
+  working_directory: "/path/to/project",
+  providers: {
+    agent: { type: "opencode" },
+  },
+});
+```

@@ -1,0 +1,341 @@
+---
+title: "Traces"
+description: "Typed event streams for workflow execution — 14 event types covering workflows, steps, agents, and checkpoints."
+---
+
+# Traces
+
+Every workflow execution produces a typed event stream. Traces are not string logs — they are structured `TraceEvent` objects that can be queried, diffed, stored, and replayed.
+
+## Trace
+
+The top-level trace object captures a complete workflow execution:
+
+```typescript
+type Trace = {
+  run_id: string;
+  workflow_id: string;
+  events: TraceEvent[];
+  status: "success" | "failure";
+  duration_ms: number;
+};
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run_id` | `string` | Unique execution identifier |
+| `workflow_id` | `string` | ID of the workflow that was executed |
+| `events` | `TraceEvent[]` | Ordered list of all events |
+| `status` | `"success" \| "failure"` | Final execution status |
+| `duration_ms` | `number` | Total wall-clock execution time |
+
+---
+
+## TraceEvent types
+
+The `TraceEvent` type is a discriminated union of 14 event types, grouped by scope.
+
+### Workflow events
+
+Events that mark the lifecycle of the entire workflow.
+
+#### workflow_start
+
+Emitted when a workflow begins execution.
+
+```typescript
+{
+  type: "workflow_start";
+  workflow_id: string;
+  run_id: string;
+  input: unknown;
+  timestamp: number;
+}
+```
+
+#### workflow_complete
+
+Emitted when a workflow finishes successfully.
+
+```typescript
+{
+  type: "workflow_complete";
+  output: unknown;
+  duration_ms: number;
+  timestamp: number;
+}
+```
+
+#### workflow_error
+
+Emitted when a workflow fails.
+
+```typescript
+{
+  type: "workflow_error";
+  error: unknown;
+  duration_ms: number;
+  timestamp: number;
+}
+```
+
+### Step events
+
+Events that mark the lifecycle of individual steps within a workflow.
+
+#### step_start
+
+Emitted when a step begins execution.
+
+```typescript
+{
+  type: "step_start";
+  step_id: string;
+  input: unknown;
+  timestamp: number;
+}
+```
+
+#### step_complete
+
+Emitted when a step finishes successfully.
+
+```typescript
+{
+  type: "step_complete";
+  step_id: string;
+  output: unknown;
+  duration_ms: number;
+  timestamp: number;
+}
+```
+
+#### step_error
+
+Emitted when a step fails.
+
+```typescript
+{
+  type: "step_error";
+  step_id: string;
+  error: unknown;
+  duration_ms: number;
+  timestamp: number;
+}
+```
+
+#### step_skipped
+
+Emitted when a step is skipped.
+
+```typescript
+{
+  type: "step_skipped";
+  step_id: string;
+  reason: string;
+  timestamp: number;
+}
+```
+
+### Agent events
+
+Events that capture AI agent interactions within agent steps.
+
+#### agent_session_created
+
+Emitted when an agent session is created.
+
+```typescript
+{
+  type: "agent_session_created";
+  step_id: string;
+  session_id: string;
+  timestamp: number;
+}
+```
+
+#### agent_prompt_sent
+
+Emitted when a prompt is sent to an agent.
+
+```typescript
+{
+  type: "agent_prompt_sent";
+  step_id: string;
+  session_id: string;
+  prompt: string;
+  timestamp: number;
+}
+```
+
+#### agent_tool_call
+
+Emitted when an agent invokes a tool.
+
+```typescript
+{
+  type: "agent_tool_call";
+  step_id: string;
+  session_id: string;
+  tool: string;
+  args: unknown;
+  timestamp: number;
+}
+```
+
+#### agent_tool_result
+
+Emitted when a tool returns a result to the agent.
+
+```typescript
+{
+  type: "agent_tool_result";
+  step_id: string;
+  session_id: string;
+  tool: string;
+  result: unknown;
+  timestamp: number;
+}
+```
+
+#### agent_response
+
+Emitted when an agent completes its response.
+
+```typescript
+{
+  type: "agent_response";
+  step_id: string;
+  session_id: string;
+  response: unknown;
+  timestamp: number;
+}
+```
+
+### Checkpoint events
+
+Events that capture human-in-the-loop interactions.
+
+#### checkpoint_waiting
+
+Emitted when a checkpoint step pauses the workflow and waits for human input.
+
+```typescript
+{
+  type: "checkpoint_waiting";
+  step_id: string;
+  checkpoint_id: string;
+  prompt: string;
+  timestamp: number;
+}
+```
+
+#### checkpoint_resolved
+
+Emitted when a human provides input and the checkpoint resumes.
+
+```typescript
+{
+  type: "checkpoint_resolved";
+  step_id: string;
+  checkpoint_id: string;
+  input: unknown;
+  timestamp: number;
+}
+```
+
+---
+
+## TraceCollector
+
+Collects trace events during execution and builds the final `Trace` object.
+
+```typescript
+class TraceCollector implements TraceEmitter {
+  events: TraceEvent[];
+
+  emit(event: TraceEvent): void;
+  onEvent(listener: (event: TraceEvent) => void): void;
+  toTrace(run_id: string, workflow_id: string, status: "success" | "failure", duration_ms: number): Trace;
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `emit(event)` | Add a trace event to the collector |
+| `onEvent(listener)` | Register a listener for real-time event streaming |
+| `toTrace(...)` | Build the final `Trace` object from collected events |
+
+The collector is created internally by the engine. You don't typically create one directly unless building custom tooling.
+
+---
+
+## TraceEmitter
+
+The interface available to `fn()` steps via `ctx.trace`:
+
+```typescript
+type TraceEmitter = {
+  emit: (event: TraceEvent) => void;
+};
+```
+
+Use this to emit custom events from within `fn()` steps:
+
+```typescript
+const my_step = fn({
+  id: "my-step",
+  input: z.object({ data: z.string() }),
+  output: z.object({ result: z.string() }),
+  run: async (input, ctx) => {
+    ctx.trace.emit({
+      type: "step_start",
+      step_id: "sub-operation",
+      input: { detail: "starting sub-operation" },
+      timestamp: Date.now(),
+    });
+
+    // ... do work ...
+
+    return ok({ result: "done" });
+  },
+});
+```
+
+---
+
+## Viewing traces
+
+### CLI
+
+Use `runbook trace <run-id>` to display a trace from the terminal:
+
+```bash
+runbook trace abc-123
+```
+
+### Storage
+
+Traces are stored as `trace.json` in the git artifact store under `refs/runbook/runs/<run-id>`. This keeps traces invisible to `git log` but accessible via the CLI and programmatic APIs.
+
+### Programmatic access
+
+After running a workflow, the trace is available on the result:
+
+```typescript
+const result = await engine.run(workflow, input);
+if (result.ok) {
+  const trace = result.value.trace;
+  console.log(`${trace.events.length} events in ${trace.duration_ms}ms`);
+
+  // Filter for step events only
+  const step_events = trace.events.filter((e) =>
+    e.type.startsWith("step_")
+  );
+
+  // Find errors
+  const errors = trace.events.filter((e) =>
+    e.type === "step_error" || e.type === "workflow_error"
+  );
+}
+```

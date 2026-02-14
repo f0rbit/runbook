@@ -1,0 +1,273 @@
+---
+title: Agent Steps
+description: Define agent-powered workflow steps with typed inputs, outputs, system prompts, and two extraction modes.
+---
+
+## Overview
+
+Agent steps dispatch work to an `AgentExecutor` — an abstraction over LLM-powered agents like Claude Code. The engine manages the full session lifecycle: creation, prompting, output extraction, validation, and teardown.
+
+```typescript
+import { agent } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: z.object({
+    issues: z.array(z.string()),
+    severity: z.enum(["low", "medium", "high"]),
+  }),
+  prompt: (input) => `Analyze this code for issues:\n${input.code}`,
+});
+```
+
+## Output Modes
+
+Two modes control how the engine extracts output from agent responses.
+
+### Analyze Mode (default)
+
+The agent returns JSON matching the output schema. Used for analysis, review, and planning tasks.
+
+The engine:
+1. Takes the agent's text response
+2. Parses it as JSON
+3. Validates against the step's Zod output schema
+
+```typescript
+const review = agent({
+  id: "review",
+  input: z.object({ pr_diff: z.string() }),
+  output: z.object({
+    approved: z.boolean(),
+    comments: z.array(z.string()),
+  }),
+  prompt: (input) => `Review this PR:\n${input.pr_diff}`,
+  // analyze mode is the default — no need to specify
+});
+```
+
+The agent must respond with valid JSON. If parsing or validation fails, the engine returns an `agent_parse_error`.
+
+### Build Mode
+
+Output is derived from session metadata (`files_changed`, `tool_calls`, etc.) rather than the agent's text response. Used for code generation and refactoring tasks.
+
+```typescript
+const implement = agent({
+  id: "implement",
+  input: z.object({ spec: z.string() }),
+  output: z.object({
+    files_changed: z.array(z.string()),
+  }),
+  prompt: (input) => `Implement: ${input.spec}`,
+  agent_opts: {
+    output_mode: "build",
+  },
+});
+```
+
+The engine extracts structured data from the `AgentResponse.metadata` rather than parsing the text.
+
+## System Prompts
+
+### Inline System Prompt
+
+```typescript
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: AnalysisSchema,
+  prompt: (input) => `Analyze: ${input.code}`,
+  agent_opts: {
+    system_prompt: "You are a code review expert. Return JSON only.",
+  },
+});
+```
+
+### system_prompt_file
+
+Load system prompts from markdown files at execution time:
+
+```typescript
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: AnalysisSchema,
+  prompt: (input) => `Analyze: ${input.code}`,
+  agent_opts: {
+    system_prompt_file: "./prompts/analyzer.md",
+  },
+});
+```
+
+**Path resolution:**
+- Absolute paths are used as-is
+- Relative paths resolve against `engine_opts.working_directory`
+
+**Combining sources:** When both `system_prompt_file` and `system_prompt` are set, the file content is prepended to the inline prompt. This lets you keep reusable instructions in a file and add step-specific context inline.
+
+```typescript
+agent_opts: {
+  system_prompt_file: "./prompts/base.md",   // loaded first
+  system_prompt: "Focus on security issues.", // appended after
+}
+```
+
+## Agent Type
+
+The `agent_type` field is a freeform `string` — not limited to preset values. Different agent types can map to different executor behaviors.
+
+```typescript
+agent_opts: {
+  agent_type: "explorer",  // or "coder", "planner", or any custom string
+}
+```
+
+The executor implementation decides what `agent_type` means. For example, a Claude Code executor might configure different permissions or tool sets based on the type.
+
+## AgentExecutor Interface
+
+The `AgentExecutor` is the abstraction that agent steps dispatch to:
+
+```typescript
+type AgentExecutor = {
+  createSession: (
+    opts: CreateSessionOpts,
+  ) => Promise<Result<AgentSession, AgentError>>;
+
+  prompt: (
+    session_id: string,
+    opts: PromptOpts,
+  ) => Promise<Result<AgentResponse, AgentError>>;
+
+  subscribe?: (
+    session_id: string,
+    handler: (event: AgentEvent) => void,
+  ) => () => void;
+
+  destroySession?: (
+    session_id: string,
+  ) => Promise<Result<void, AgentError>>;
+
+  healthCheck?: () => Promise<Result<void, AgentError>>;
+};
+```
+
+Only `createSession` and `prompt` are required. `subscribe`, `destroySession`, and `healthCheck` are optional capabilities.
+
+## Session Lifecycle
+
+The engine manages the full lifecycle for each agent step:
+
+1. **Create** — Engine calls `createSession()` with working directory, system prompt, and permissions
+2. **Prompt** — Engine calls `prompt()` with the generated prompt text (from the step's `prompt` function)
+3. **Execute** — Agent processes the prompt, makes tool calls, generates a response
+4. **Receive** — Engine gets an `AgentResponse` with text and metadata
+5. **Extract** — Engine extracts output based on mode (analyze: parse text as JSON, build: from metadata)
+6. **Validate** — Engine validates output against the step's Zod output schema
+7. **Destroy** — Engine optionally calls `destroySession()`
+
+## AgentResponse Structure
+
+```typescript
+type AgentResponse = {
+  session_id: string;
+  text: string;
+  metadata: {
+    files_changed?: string[];
+    tool_calls?: AgentToolCall[];
+    tokens_used?: { input: number; output: number };
+    duration_ms: number;
+  };
+};
+```
+
+In **analyze mode**, the engine uses `text`. In **build mode**, the engine uses `metadata`.
+
+## Permissions
+
+Control what the agent can do during execution:
+
+```typescript
+type AgentPermission = {
+  permission: string;
+  pattern: string;
+  action: "allow" | "deny" | "ask";
+};
+```
+
+Permissions are passed to `createSession` and enforced by the executor implementation. For example:
+
+```typescript
+agent_opts: {
+  permissions: [
+    { permission: "file:read", pattern: "src/**", action: "allow" },
+    { permission: "file:write", pattern: "src/**", action: "allow" },
+    { permission: "file:write", pattern: ".env*", action: "deny" },
+    { permission: "shell:exec", pattern: "*", action: "ask" },
+  ],
+}
+```
+
+## Error Handling
+
+Agent errors are typed as a discriminated union:
+
+```typescript
+type AgentError =
+  | { kind: "connection_failed"; cause: string }
+  | { kind: "session_failed"; cause: string }
+  | { kind: "prompt_failed"; session_id: string; cause: string }
+  | { kind: "timeout"; session_id: string; timeout_ms: number };
+```
+
+If agent output fails Zod validation, the engine returns a parse error:
+
+```typescript
+{ kind: "agent_parse_error"; step_id: string; raw_output: string; issues: ZodIssue[] }
+```
+
+All errors are returned as `Result<T, AgentError>` values — never thrown. This integrates cleanly with the `@f0rbit/corpus` pipe chains used throughout the engine.
+
+## Using Agent Steps in Workflows
+
+Agent steps compose with other step types in the workflow pipeline:
+
+```typescript
+import { defineWorkflow, agent, fn, shell } from "@f0rbit/runbook";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const explore = agent({
+  id: "explore",
+  input: z.object({ query: z.string() }),
+  output: z.object({ files: z.array(z.string()) }),
+  prompt: (input) => `Find files related to: ${input.query}`,
+  agent_opts: { agent_type: "explorer" },
+});
+
+const implement = agent({
+  id: "implement",
+  input: z.object({ spec: z.string(), files: z.array(z.string()) }),
+  output: z.object({ files_changed: z.array(z.string()) }),
+  prompt: (input) =>
+    `Implement ${input.spec}. Relevant files: ${input.files.join(", ")}`,
+  agent_opts: {
+    agent_type: "coder",
+    output_mode: "build",
+    system_prompt_file: "./prompts/coder.md",
+  },
+});
+
+const workflow = defineWorkflow(z.object({ spec: z.string() }))
+  .pipe(explore, (wf) => ({ query: wf.spec }))
+  .pipe(implement, (wf, prev) => ({
+    spec: wf.spec,
+    files: prev.files,
+  }))
+  .done("implement-feature", z.object({ files_changed: z.array(z.string()) }));
+```
+
+The `pipe()` mapper receives `(workflow_input, previous_step_output)` — both fully typed from their respective Zod schemas.

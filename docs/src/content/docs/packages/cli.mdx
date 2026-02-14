@@ -1,0 +1,211 @@
+---
+title: "@f0rbit/runbook-cli"
+description: "Full CLI reference — all commands, global options, and usage examples for the runbook command-line tool."
+---
+
+The CLI package provides the `runbook` command. Published as `@f0rbit/runbook-cli` on npm.
+
+```bash
+bun add -g @f0rbit/runbook-cli
+```
+
+The CLI is a thin HTTP client — all workflow execution happens in the server process. It uses raw `process.argv` parsing with no CLI framework dependency.
+
+---
+
+## Global Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--url <url>` | Server URL | `http://localhost:4400` (env: `RUNBOOK_URL`) |
+| `--config <path>` | Config file path | Auto-discovered (see [Config Discovery](#config-discovery)) |
+| `--help` | Show help | — |
+
+---
+
+## Commands
+
+### `serve`
+
+Start the runbook server. Loads config, resolves providers, and starts the Hono HTTP server.
+
+```bash
+runbook serve
+runbook serve --config ./my-config.ts
+```
+
+The server binds to the port specified in your config (default `4400`). It registers all workflows defined in the config and creates the engine with resolved providers.
+
+---
+
+### `run`
+
+Submit a workflow run to the server.
+
+```bash
+runbook run <workflow> [task...] [--input <json>]
+```
+
+Positional `task` words are joined into a string and passed as `{ task: "..." }` input. Use `--input` for structured JSON input.
+
+```bash
+# Simple task string
+runbook run simple-change fix the login button
+
+# Structured JSON input
+runbook run code-review --input '{"code": "console.log(1)"}'
+```
+
+The command prints the `run_id` and begins streaming trace events until the run completes.
+
+---
+
+### `status`
+
+Get the current status of a run. Supports live streaming via SSE.
+
+```bash
+runbook status <run-id>
+runbook status <run-id> --live
+```
+
+| Flag | Description |
+|------|-------------|
+| `--live` | Stream trace events via SSE until the run completes |
+
+Without `--live`, prints a snapshot of the current run state (status, step progress, timing).
+
+---
+
+### `trace`
+
+Display the full typed event stream for a completed run.
+
+```bash
+runbook trace <run-id>
+```
+
+Prints all trace events with timestamps, step IDs, and event payloads. Trace events are typed (not string logs) — covering workflow lifecycle, step execution, agent interactions, and errors.
+
+---
+
+### `list`
+
+List all workflows registered in the loaded config.
+
+```bash
+runbook list
+```
+
+Displays workflow IDs, step counts, and input/output schema summaries.
+
+---
+
+### `history`
+
+List stored runs from the git artifact store.
+
+```bash
+runbook history
+```
+
+Reads from `refs/runbook/runs/` in the local git repository. Shows run ID, workflow, status, timestamp, and duration.
+
+---
+
+### `show`
+
+Show run or step artifacts from the git store.
+
+```bash
+# Show full run artifacts
+runbook show <run-id>
+
+# Show specific step artifacts
+runbook show <run-id> <step-id>
+```
+
+Displays metadata, trace summary, and step-level inputs/outputs. When a `step-id` is provided, shows that step's full artifacts including prompt and response data.
+
+---
+
+### `diff`
+
+Diff two stored runs side-by-side.
+
+```bash
+runbook diff <run-id-1> <run-id-2>
+```
+
+Compares metadata, timing, outputs, and step results between two runs. Useful for comparing before/after when iterating on workflows.
+
+---
+
+### `push`
+
+Push artifact refs to a remote.
+
+```bash
+runbook push
+runbook push --remote origin
+```
+
+| Flag | Description |
+|------|-------------|
+| `--remote <name>` | Git remote to push to (default: `origin`) |
+
+Pushes `refs/runbook/runs/*` to the remote so run artifacts are shared with the team.
+
+---
+
+### `pull`
+
+Pull artifact refs from a remote.
+
+```bash
+runbook pull
+runbook pull --remote origin
+```
+
+| Flag | Description |
+|------|-------------|
+| `--remote <name>` | Git remote to pull from (default: `origin`) |
+
+Fetches `refs/runbook/runs/*` from the remote into the local repository.
+
+---
+
+### `cancel`
+
+Cancel a running workflow.
+
+```bash
+runbook cancel <run-id>
+```
+
+Sends a cancellation request to the server. The engine aborts the current step and marks the run as cancelled.
+
+---
+
+## Config Discovery
+
+The CLI discovers configuration in this priority order:
+
+1. `--config <path>` flag (explicit path)
+2. Walk up from `cwd` looking for `runbook.config.ts`
+3. `~/.config/runbook/runbook.config.ts` (global fallback)
+
+The global fallback enables user-wide workflow definitions separate from project-specific configs. Local configs always take precedence.
+
+```typescript
+// runbook.config.ts
+import { defineConfig } from "@f0rbit/runbook";
+
+export default defineConfig({
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  workflows: [myWorkflow, anotherWorkflow],
+});
+```

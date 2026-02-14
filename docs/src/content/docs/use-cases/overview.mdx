@@ -1,0 +1,157 @@
+---
+title: "Use Cases"
+description: "Why Runbook exists, what problems it solves, and real-world workflow patterns for AI agent orchestration."
+---
+
+# The Problem
+
+Software teams increasingly use AI coding agents for real development work. But there is no standard way to:
+
+1. **Orchestrate multi-step agent workflows.** "Analyze this PR, then fix the issues, then run tests, then open a PR" requires manual coordination or brittle shell scripts. Each step is a separate agent invocation with no typed contract between them.
+
+2. **Validate agent output.** Agents return unstructured text. There is no compile-time guarantee that what one step produces matches what the next step expects.
+
+3. **Audit what happened.** Agent sessions produce logs, but there is no structured trace of decisions, tool calls, and outputs across a multi-step pipeline.
+
+4. **Test agent workflows.** You cannot unit test a workflow that calls GPT-4. Each run costs money, takes 30–60 seconds, and produces non-deterministic output.
+
+5. **Compose workflows.** Reusing a "review code" workflow inside a "deploy feature" workflow should not require copy-pasting steps.
+
+---
+
+# The Solution
+
+Runbook is a typed workflow engine where AI agents are first-class step types alongside pure functions, shell commands, and human checkpoints.
+
+**Key differentiators:**
+
+| Capability | How Runbook delivers it |
+|---|---|
+| Compile-time type safety | Zod schemas at every step boundary — TypeScript catches wiring errors before runtime |
+| Pluggable agent dispatch | `AgentExecutor` interface, not raw LLM API calls |
+| Two agent output modes | `"analyze"` (JSON from text) and `"build"` (from session metadata) |
+| Deterministic testing | In-memory providers — instant, free, no mocking |
+| Structured traces | Typed `TraceEvent` objects, not string logs |
+| Git artifact storage | Every agent interaction recorded and content-addressed under `refs/runbook/runs/` |
+
+---
+
+# Use Cases
+
+## 1. Automated Code Review Pipeline
+
+```
+read PR diff → agent: analyze → agent: suggest fixes
+  → checkpoint: approval → apply fixes → run tests
+```
+
+Agent output is validated against a Zod schema at every boundary. The review step produces typed issues, not freeform text:
+
+```typescript
+import { agent, shell, checkpoint, defineWorkflow } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const IssueSchema = z.object({
+  file: z.string(),
+  line: z.number(),
+  description: z.string(),
+  severity: z.enum(["error", "warning", "info"]),
+});
+
+const ReviewOutputSchema = z.object({
+  issues: z.array(IssueSchema),
+  summary: z.string(),
+});
+
+const review = agent({
+  id: "review-pr",
+  input: z.object({ diff: z.string() }),
+  output: ReviewOutputSchema,
+  prompt: (input) => `Review this PR diff and identify issues:\n${input.diff}`,
+  mode: "analyze",
+});
+```
+
+The next step in the pipeline receives `ReviewOutputSchema` — not a string, not `any`. TypeScript enforces the contract at compile time.
+
+```typescript
+const fix = agent({
+  id: "fix-issues",
+  input: ReviewOutputSchema,
+  output: z.object({ files_changed: z.array(z.string()) }),
+  prompt: (input) =>
+    `Fix these issues:\n${input.issues.map((i) => `${i.file}:${i.line} — ${i.description}`).join("\n")}`,
+  mode: "build",
+});
+```
+
+## 2. Feature Implementation Workflow
+
+```
+parse spec → agent: plan (analyze mode) → checkpoint: approve
+  → agent: write code (build mode) → shell: test → agent: fix → shell: lint
+```
+
+The planning agent outputs structured phases. The checkpoint pauses for human review. The coding agent operates in `"build"` mode — output is extracted from session metadata (files changed), not from the LLM's text response.
+
+```typescript
+const PlanSchema = z.object({
+  phases: z.array(z.object({
+    name: z.string(),
+    tasks: z.array(z.string()),
+  })),
+});
+
+const plan = agent({
+  id: "plan",
+  input: z.object({ spec: z.string() }),
+  output: PlanSchema,
+  prompt: (input) => `Break this spec into implementation phases:\n${input.spec}`,
+  mode: "analyze",
+});
+
+const approve = checkpoint({
+  id: "approve-plan",
+  input: PlanSchema,
+  output: z.object({ approved: z.boolean() }),
+  prompt: (input) =>
+    `Approve this plan?\n${input.phases.map((p) => `- ${p.name}: ${p.tasks.join(", ")}`).join("\n")}`,
+});
+```
+
+## 3. CI/CD with Agent Steps
+
+```
+shell: build → shell: test → agent: analyze failures
+  → checkpoint: deploy approval → shell: deploy
+```
+
+Shell steps handle standard CI tasks. When tests fail, an agent step analyzes the failure output and produces a structured diagnosis. The checkpoint gates deployment on human approval.
+
+## 4. Documentation Generation
+
+```
+agent: scan codebase → agent: generate docs → shell: format
+  → checkpoint: review
+```
+
+The scanning agent produces a structured codebase map. The generation agent uses that map to produce documentation. Shell steps handle formatting (Prettier, markdownlint). The checkpoint lets a human review before merge.
+
+## 5. Incident Response Runbook
+
+```
+shell: collect logs → agent: analyze root cause → agent: draft fix
+  → checkpoint: approve → agent: implement → shell: test → shell: deploy
+```
+
+Shell steps collect logs and metrics. Agent steps analyze root cause and draft a fix. The checkpoint ensures a human approves before any code changes are applied. The entire trace is recorded — who approved what, when, and what the agent decided.
+
+---
+
+# Who Is This For
+
+**Teams building AI-augmented dev tooling** — A typed pipeline runtime, not another prompt chain library. Define workflows in TypeScript with compile-time safety, test them deterministically, and audit every execution.
+
+**Platform engineers** — Standardize agent workflow definitions, testing, and auditing across teams. The Provider pattern means workflows are portable — swap executors without changing workflow code.
+
+**Solo developers** — Automate multi-step coding workflows with structured output and traceability. Run locally on Bun with a single server process — no cluster, no cloud, no YAML.

@@ -1,0 +1,294 @@
+---
+title: "Providers"
+description: "Provider pattern for external I/O — ShellProvider, AgentExecutor, CheckpointProvider — with swappable implementations for production and testing."
+---
+
+# Providers
+
+All external I/O in runbook is behind provider interfaces. The engine dispatches to providers — it never calls `Bun.spawn`, LLM APIs, or stdin directly. This makes every workflow fully testable with in-memory fakes.
+
+## Overview
+
+| Provider | Step type | Production | Testing |
+|----------|-----------|------------|---------|
+| `ShellProvider` | `shell()` | `BunShellProvider` | `InMemoryShellProvider` |
+| `AgentExecutor` | `agent()` | `OpenCodeExecutor` | `InMemoryAgentExecutor` |
+| `CheckpointProvider` | `checkpoint()` | `createServerCheckpointProvider()` | `InMemoryCheckpointProvider` |
+
+Production implementations live in `@f0rbit/runbook-server`. In-memory fakes live in `@f0rbit/runbook/test`.
+
+---
+
+## ShellProvider
+
+Executes shell commands. Used by `shell()` steps.
+
+### Interface
+
+```typescript
+type ShellProvider = {
+  exec: (command: string, opts?: ShellOpts) => Promise<Result<ShellResult, ShellError>>;
+};
+```
+
+### Types
+
+```typescript
+type ShellOpts = {
+  cwd?: string;
+  env?: Record<string, string>;
+  timeout_ms?: number;
+  signal?: AbortSignal;
+};
+
+type ShellResult = {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+};
+
+type ShellError = {
+  kind: "shell_spawn_error";
+  command: string;
+  cause: string;
+};
+```
+
+### BunShellProvider
+
+Production implementation from `@f0rbit/runbook-server`. Spawns real processes via Bun's shell API.
+
+```typescript
+import { BunShellProvider } from "@f0rbit/runbook-server";
+
+const shell = new BunShellProvider();
+const result = await shell.exec("ls -la", { cwd: "/tmp" });
+```
+
+### InMemoryShellProvider
+
+Testing implementation from `@f0rbit/runbook/test`. Returns pre-configured responses without spawning processes.
+
+```typescript
+import { InMemoryShellProvider } from "@f0rbit/runbook/test";
+import { ok } from "@f0rbit/corpus";
+
+const shell = new InMemoryShellProvider({
+  "eslint src/": ok({ stdout: "", stderr: "", exit_code: 0 }),
+  "bun test": ok({ stdout: "3 tests passed", stderr: "", exit_code: 0 }),
+});
+```
+
+---
+
+## AgentExecutor
+
+Manages AI agent sessions. Used by `agent()` steps.
+
+### Interface
+
+```typescript
+type AgentExecutor = {
+  createSession: (opts: CreateSessionOpts) => Promise<Result<AgentSession, AgentError>>;
+  prompt: (session_id: string, opts: PromptOpts) => Promise<Result<AgentResponse, AgentError>>;
+  subscribe?: (session_id: string, handler: (event: AgentEvent) => void) => () => void;
+  destroySession?: (session_id: string) => Promise<Result<void, AgentError>>;
+  healthCheck?: () => Promise<Result<void, AgentError>>;
+};
+```
+
+### Types
+
+```typescript
+type CreateSessionOpts = {
+  system_prompt?: string;
+  working_directory?: string;
+  model?: { provider_id: string; model_id: string };
+  agent_type?: string;
+  permissions?: AgentPermission[];
+};
+
+type AgentSession = {
+  session_id: string;
+};
+
+type PromptOpts = {
+  prompt: string;
+  output_schema?: z.ZodType;
+};
+
+type AgentResponse = {
+  text: string;
+  metadata?: Record<string, unknown>;
+};
+
+type AgentError =
+  | { kind: "agent_session_error"; cause: string }
+  | { kind: "agent_prompt_error"; session_id: string; cause: string }
+  | { kind: "agent_timeout"; session_id: string; timeout_ms: number };
+```
+
+### OpenCodeExecutor
+
+Production implementation from `@f0rbit/runbook-server`. Dispatches to OpenCode AI agent sessions.
+
+```typescript
+import { OpenCodeExecutor } from "@f0rbit/runbook-server";
+
+const executor = new OpenCodeExecutor({
+  base_url: "http://localhost:3000",
+});
+```
+
+### InMemoryAgentExecutor
+
+Testing implementation from `@f0rbit/runbook/test`. Returns pre-configured responses and tracks session creation for test assertions.
+
+```typescript
+import { InMemoryAgentExecutor } from "@f0rbit/runbook/test";
+import { ok } from "@f0rbit/corpus";
+
+const executor = new InMemoryAgentExecutor({
+  responses: {
+    review: ok({
+      text: JSON.stringify({ approved: true, comments: [] }),
+      metadata: {},
+    }),
+  },
+});
+
+// After running a workflow, inspect session creation:
+console.log(executor.created_sessions); // [{ system_prompt: "...", ... }]
+```
+
+---
+
+## CheckpointProvider
+
+Handles human-in-the-loop approval. Used by `checkpoint()` steps.
+
+### Interface
+
+```typescript
+type CheckpointProvider = {
+  prompt: (message: string, schema: z.ZodType) => Promise<Result<unknown, CheckpointError>>;
+};
+```
+
+### Types
+
+```typescript
+type CheckpointError =
+  | { kind: "checkpoint_timeout"; step_id: string; timeout_ms: number }
+  | { kind: "checkpoint_rejected"; step_id: string }
+  | { kind: "checkpoint_invalid_input"; step_id: string; issues: z.ZodIssue[] };
+```
+
+### createServerCheckpointProvider()
+
+Production implementation from `@f0rbit/runbook-server`. Bridges the engine's checkpoint flow with an HTTP endpoint — the engine pauses, the server exposes a POST endpoint, and the CLI prompts the user via stdin.
+
+```typescript
+import { createServerCheckpointProvider } from "@f0rbit/runbook-server";
+
+const checkpoint_provider = createServerCheckpointProvider();
+```
+
+### InMemoryCheckpointProvider
+
+Testing implementation from `@f0rbit/runbook/test`. Returns pre-configured responses without user interaction.
+
+```typescript
+import { InMemoryCheckpointProvider } from "@f0rbit/runbook/test";
+import { ok } from "@f0rbit/corpus";
+
+const checkpoint = new InMemoryCheckpointProvider({
+  approve: ok({ approved: true }),
+});
+```
+
+---
+
+## resolveProviders()
+
+From `@f0rbit/runbook-server`. Creates real providers from a `ProviderConfig` object.
+
+```typescript
+function resolveProviders(config: ProviderConfig): Providers
+```
+
+Behavior:
+
+- Always creates a `BunShellProvider`
+- Creates an `OpenCodeExecutor` when `config.agent.type === "opencode"`
+- Creates a `createServerCheckpointProvider()` for checkpoint support
+
+```typescript
+import { resolveProviders } from "@f0rbit/runbook-server";
+
+const providers = resolveProviders({
+  agent: { type: "opencode", base_url: "http://localhost:3000" },
+});
+```
+
+## verifyProviders()
+
+Checks that required providers are available for a workflow's step types. Call this before execution to get a clear error if a provider is missing.
+
+```typescript
+import { verifyProviders } from "@f0rbit/runbook-server";
+
+const result = verifyProviders(workflow, providers);
+if (!result.ok) {
+  console.error(result.error); // "Missing AgentExecutor for agent step 'review'"
+}
+```
+
+---
+
+## Wiring providers to the engine
+
+Pass providers when creating the engine:
+
+```typescript
+import { createEngine } from "@f0rbit/runbook-server";
+
+const engine = createEngine({
+  providers: {
+    shell: new BunShellProvider(),
+    agent: executor,
+    checkpoint: checkpoint_provider,
+  },
+  working_directory: process.cwd(),
+});
+```
+
+The engine dispatches each step to the appropriate provider. If a step type has no provider, execution fails with a typed error.
+
+## Testing with in-memory providers
+
+```typescript
+import { InMemoryShellProvider, InMemoryAgentExecutor, InMemoryCheckpointProvider } from "@f0rbit/runbook/test";
+import { createEngine } from "@f0rbit/runbook-server";
+import { ok } from "@f0rbit/corpus";
+
+const engine = createEngine({
+  providers: {
+    shell: new InMemoryShellProvider({
+      "bun test": ok({ stdout: "pass", stderr: "", exit_code: 0 }),
+    }),
+    agent: new InMemoryAgentExecutor({
+      responses: {
+        review: ok({ text: '{"approved":true}', metadata: {} }),
+      },
+    }),
+    checkpoint: new InMemoryCheckpointProvider({
+      approve: ok({ approved: true }),
+    }),
+  },
+});
+
+const result = await engine.run(workflow, input);
+```
+
+No mocking — the Provider pattern replaces all external dependencies with real implementations that happen to run in-memory.

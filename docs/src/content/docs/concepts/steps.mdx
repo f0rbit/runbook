@@ -1,0 +1,263 @@
+---
+title: "Steps"
+description: "Reference for all four step types — fn(), shell(), agent(), and checkpoint() — with full API, parameters, and examples."
+---
+
+# Steps
+
+Steps are the building blocks of workflows. Each step has a Zod input schema, a Zod output schema, and a typed execution function. The engine validates data at every boundary — if a schema doesn't match, you get a typed error, not a runtime crash.
+
+There are four step types, each designed for a different kind of work:
+
+| Step | Purpose |
+|------|---------|
+| `fn()` | Pure function — arbitrary TypeScript logic |
+| `shell()` | Shell command — spawns a process |
+| `agent()` | AI agent — dispatches to an LLM executor |
+| `checkpoint()` | Human approval — pauses for user input |
+
+All step builders are imported from `@f0rbit/runbook`.
+
+---
+
+## fn() — Pure function step
+
+Execute arbitrary TypeScript logic. This is the escape hatch for all control flow not expressible in the pipeline builder — dynamic parallelism, conditional routing, retry loops, and multi-turn sessions via `ctx.engine`.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Unique step identifier |
+| `input` | `z.ZodType<I>` | Yes | Zod schema for input validation |
+| `output` | `z.ZodType<O>` | Yes | Zod schema for output validation |
+| `description` | `string` | No | Human-readable description |
+| `run` | `(input: I, ctx: StepContext) => Promise<Result<O, StepError>>` | Yes | Execution function |
+
+### StepContext
+
+The `run` function receives a `StepContext` with:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workflow_id` | `string` | ID of the running workflow |
+| `step_id` | `string` | ID of this step |
+| `run_id` | `string` | Unique execution ID |
+| `trace` | `TraceEmitter` | Emit custom trace events |
+| `signal` | `AbortSignal` | Cancellation signal |
+| `engine` | `EngineHandle` | Run sub-workflows with inherited providers |
+| `working_directory` | `string` | Resolved working directory |
+
+### Return type
+
+The `run` function returns `Result<O, StepError>` from `@f0rbit/corpus`. Use `ok()` for success, `err()` for failure. Never throw — errors are values.
+
+### Example
+
+```typescript
+import { fn } from "@f0rbit/runbook";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const transform = fn({
+  id: "transform",
+  input: z.object({ text: z.string() }),
+  output: z.object({ words: z.number() }),
+  run: async (input) => ok({ words: input.text.split(" ").length }),
+});
+```
+
+### Running sub-workflows
+
+Use `ctx.engine` to run sub-workflows with inherited providers:
+
+```typescript
+const orchestrator = fn({
+  id: "orchestrator",
+  input: z.object({ files: z.array(z.string()) }),
+  output: z.object({ results: z.array(z.string()) }),
+  run: async (input, ctx) => {
+    const results = [];
+    for (const file of input.files) {
+      const result = await ctx.engine.run(process_workflow, { file });
+      if (!result.ok) return result;
+      results.push(result.value.output);
+    }
+    return ok({ results });
+  },
+});
+```
+
+---
+
+## shell() — Shell command step
+
+Spawn a shell process and parse its output. Dispatches to a `ShellProvider` — `BunShellProvider` in production, `InMemoryShellProvider` in tests.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Unique step identifier |
+| `input` | `z.ZodType<I>` | Yes | Zod schema for input validation |
+| `output` | `z.ZodType<O>` | Yes | Zod schema for output validation |
+| `description` | `string` | No | Human-readable description |
+| `command` | `(input: I) => string` | Yes | Generates the shell command from validated input |
+| `parse` | `(stdout: string, code: number) => Result<O, StepError>` | Yes | Parses shell output into typed result |
+
+### Example
+
+```typescript
+import { shell } from "@f0rbit/runbook";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const lint = shell({
+  id: "lint",
+  input: z.object({ path: z.string() }),
+  output: z.object({ clean: z.boolean(), output: z.string() }),
+  command: (input) => `eslint ${input.path} --format json`,
+  parse: (stdout, code) => ok({ clean: code === 0, output: stdout }),
+});
+```
+
+The `command` function receives the validated input and returns a shell command string. The `parse` function receives stdout and the exit code, and returns a `Result` with the parsed output.
+
+### Working directory
+
+Shell commands execute in the `working_directory` configured on the engine. This is set via `RunbookConfig.working_directory` and propagated through the engine to the shell provider's `opts.cwd`.
+
+---
+
+## agent() — AI agent step
+
+Dispatch work to an AI coding agent. The agent receives a prompt, executes with tools, and returns typed output validated against the step's Zod schema.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Unique step identifier |
+| `input` | `z.ZodType<I>` | Yes | Zod schema for input validation |
+| `output` | `z.ZodType<O>` | Yes | Zod schema for output validation |
+| `description` | `string` | No | Human-readable description |
+| `prompt` | `(input: I) => string` | Yes | Generates the agent prompt from validated input |
+| `mode` | `AgentOutputMode` | No | `"analyze"` (default) or `"build"` |
+| `agent_opts` | `AgentStepOpts` | No | Additional agent configuration |
+
+### AgentStepOpts
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | `{ provider_id: string; model_id: string }` | Model selection |
+| `agent_type` | `string` | Freeform string — not limited to preset values |
+| `timeout_ms` | `number` | Execution timeout |
+| `system_prompt` | `string` | Inline system prompt |
+| `system_prompt_file` | `string` | Path to markdown file loaded at execution time |
+| `permissions` | `AgentPermission[]` | Agent permissions |
+
+### Output modes
+
+Agent steps have two output modes that control how the output is extracted:
+
+**`"analyze"` (default)** — The agent returns JSON matching the output schema directly in its response. Use for analysis, review, planning, and any task where the output is structured data.
+
+**`"build"`** — Output is extracted from session metadata such as files changed. Use for code generation tasks where the agent's work product is code, not a JSON response.
+
+Agent output is validated against the step's Zod output schema regardless of mode. Validation failures produce typed errors.
+
+### System prompts
+
+System prompts can be provided inline, from a file, or both:
+
+- `system_prompt` — inline string
+- `system_prompt_file` — path to a markdown file, loaded at execution time
+
+When both are provided, the file content is prepended to the inline prompt. Absolute paths are used as-is; relative paths are resolved against `engine_opts.working_directory`.
+
+### Example
+
+```typescript
+import { agent } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const review = agent({
+  id: "review",
+  input: z.object({ diff: z.string() }),
+  output: z.object({
+    approved: z.boolean(),
+    comments: z.array(z.string()),
+  }),
+  prompt: (input) => `Review this diff:\n${input.diff}`,
+  mode: "analyze",
+});
+```
+
+### Agent with options
+
+```typescript
+const coder = agent({
+  id: "implement",
+  input: z.object({ task: z.string() }),
+  output: z.object({ files_changed: z.array(z.string()) }),
+  prompt: (input) => input.task,
+  mode: "build",
+  agent_opts: {
+    agent_type: "coder",
+    system_prompt_file: "./prompts/coder.md",
+    timeout_ms: 300_000,
+  },
+});
+```
+
+---
+
+## checkpoint() — Human approval step
+
+Pause the workflow and wait for human input. The engine suspends execution, the server exposes a POST endpoint for the response, and the CLI prompts stdin.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Unique step identifier |
+| `input` | `z.ZodType<I>` | Yes | Zod schema for input validation |
+| `output` | `z.ZodType<O>` | Yes | Zod schema for output validation (what the human provides) |
+| `description` | `string` | No | Human-readable description |
+| `prompt` | `(input: I) => string` | Yes | Generates the prompt shown to the human |
+
+### Flow
+
+1. Engine reaches the checkpoint step and pauses execution
+2. Server exposes a POST endpoint for the checkpoint
+3. CLI displays the prompt and waits for user input via stdin
+4. User input is validated against the output schema
+5. On valid input, execution resumes with the checkpoint output as the step result
+
+### Example
+
+```typescript
+import { checkpoint } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const approve = checkpoint({
+  id: "approve",
+  input: z.object({ summary: z.string() }),
+  output: z.object({ approved: z.boolean() }),
+  prompt: (input) => `Review and approve:\n${input.summary}`,
+});
+```
+
+### Use with pipe()
+
+Checkpoints are wired into workflows like any other step:
+
+```typescript
+const workflow = defineWorkflow(z.object({ plan: z.string() }))
+  .pipe(generate_step, (wf) => ({ task: wf.plan }))
+  .pipe(approve, (_wf, prev) => ({ summary: JSON.stringify(prev) }))
+  .pipe(execute_step, (_wf, prev) => ({ approved: prev.approved }))
+  .done("guarded-pipeline", OutputSchema);
+```
+
+The checkpoint output replaces the previous step output in the pipeline. If you need to carry data forward across a checkpoint boundary, use a module-level closure or a `fn()` step to capture it.

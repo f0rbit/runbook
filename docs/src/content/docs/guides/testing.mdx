@@ -1,0 +1,237 @@
+---
+title: Testing Workflows
+description: How to test runbook workflows using in-memory providers — no mocking, no network, fully deterministic.
+---
+
+## Philosophy
+
+Runbook tests follow a strict no-mocking philosophy. The **Provider pattern** replaces all external dependencies with in-memory implementations that run instantly and deterministically.
+
+- **No mocking** — in-memory fakes over jest.mock, vi.mock, or sinon
+- **Integration-first** — tests call SDK functions and server handlers directly, not the CLI binary
+- **Server API tests** use Hono `app.request()` — no real HTTP server needed
+- **`bun test` only** — no jest, no vitest
+
+## In-Memory Providers
+
+All test providers are available from the `@f0rbit/runbook/test` subpath export:
+
+```typescript
+import {
+  InMemoryShellProvider,
+  InMemoryAgentExecutor,
+  InMemoryCheckpointProvider,
+} from "@f0rbit/runbook/test";
+```
+
+Each provider exposes an `.on()` method to register scripted responses and tracking arrays to assert against after execution.
+
+### InMemoryShellProvider
+
+Replaces real shell execution with pattern-matched responses.
+
+```typescript
+class InMemoryShellProvider implements ShellProvider {
+  on(pattern: RegExp | string, result: Partial<ShellResult> & { stdout: string }): void;
+  executed: Array<{ command: string; opts?: ShellOpts }>;
+  exec_delay_ms: number;
+}
+```
+
+The `.on()` method registers a scripted response. When `exec()` is called, the first matching pattern wins.
+
+```typescript
+const shell = new InMemoryShellProvider();
+shell.on(/eslint/, { stdout: "[]", exit_code: 0 });
+shell.on(/tsc/, { stdout: "", exit_code: 0 });
+```
+
+After execution, inspect `shell.executed` to verify which commands ran:
+
+```typescript
+expect(shell.executed).toHaveLength(2);
+expect(shell.executed[0].command).toContain("eslint");
+```
+
+Set `exec_delay_ms` to simulate slow commands for timeout/abort testing.
+
+### InMemoryAgentExecutor
+
+Replaces real agent sessions with pattern-matched responses.
+
+```typescript
+class InMemoryAgentExecutor implements AgentExecutor {
+  on(pattern: RegExp | string, response: Partial<AgentResponse> & { text: string }): void;
+  created_sessions: Array<{ id: string; opts: CreateSessionOpts }>;
+  prompted: Array<{ session_id: string; opts: PromptOpts }>;
+  destroyed_sessions: string[];
+  prompt_delay_ms: number;
+}
+```
+
+The `.on()` method matches against the prompt text. `created_sessions` tracks session creation for assertions.
+
+```typescript
+const agent = new InMemoryAgentExecutor();
+agent.on(/Analyze/, { text: '{"issues": [], "severity": "low"}' });
+agent.on(/Review/, { text: '{"approved": true, "comments": []}' });
+```
+
+After execution, inspect session lifecycle:
+
+```typescript
+expect(agent.created_sessions).toHaveLength(1);
+expect(agent.prompted).toHaveLength(1);
+expect(agent.prompted[0].opts.text).toContain("Analyze");
+```
+
+### InMemoryCheckpointProvider
+
+Replaces interactive checkpoint prompts with scripted responses.
+
+```typescript
+class InMemoryCheckpointProvider implements CheckpointProvider {
+  on(pattern: RegExp | string, value: unknown): void;
+  prompted: Array<{ message: string }>;
+}
+```
+
+```typescript
+const cp = new InMemoryCheckpointProvider();
+cp.on(/approve/, { approved: true });
+```
+
+## Full Test Example
+
+A complete end-to-end test for a code review workflow:
+
+```typescript
+import { describe, expect, test } from "bun:test";
+import { agent, defineWorkflow, fn } from "@f0rbit/runbook";
+import {
+  InMemoryAgentExecutor,
+  InMemoryShellProvider,
+} from "@f0rbit/runbook/test";
+import { createEngine } from "@f0rbit/runbook-server";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const IssueSchema = z.object({
+  issues: z.array(z.string()),
+  severity: z.enum(["low", "medium", "high"]),
+});
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: IssueSchema,
+  prompt: (input) => `Analyze this code for issues:\n${input.code}`,
+});
+
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .pipe(analyze, (wf_input) => ({ code: wf_input.code }))
+  .done("code-review", IssueSchema);
+
+describe("code review workflow", () => {
+  test("runs end to end", async () => {
+    const shell = new InMemoryShellProvider();
+    const agent_exec = new InMemoryAgentExecutor();
+    agent_exec.on(/Analyze/, {
+      text: '{"issues": [], "severity": "low"}',
+    });
+
+    const engine = createEngine({
+      providers: { shell, agent: agent_exec },
+    });
+    const result = await engine.run(workflow, { code: "const x = 1;" });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.output.severity).toBe("low");
+      expect(result.value.output.issues).toEqual([]);
+    }
+  });
+
+  test("tracks agent sessions", async () => {
+    const agent_exec = new InMemoryAgentExecutor();
+    agent_exec.on(/Analyze/, {
+      text: '{"issues": ["unused var"], "severity": "medium"}',
+    });
+
+    const engine = createEngine({ providers: { agent: agent_exec } });
+    await engine.run(workflow, { code: "const x = 1;" });
+
+    expect(agent_exec.created_sessions).toHaveLength(1);
+    expect(agent_exec.prompted).toHaveLength(1);
+    expect(agent_exec.prompted[0].opts.text).toContain("Analyze");
+  });
+});
+```
+
+## Testing Patterns
+
+### Assert on Provider State
+
+Every provider tracks its interactions. Use these for assertions instead of mocking return values:
+
+| Provider | Tracking Fields |
+|----------|----------------|
+| `InMemoryShellProvider` | `executed` |
+| `InMemoryAgentExecutor` | `created_sessions`, `prompted`, `destroyed_sessions` |
+| `InMemoryCheckpointProvider` | `prompted` |
+
+### Multiple Patterns
+
+For workflows with multiple steps, register a pattern for each:
+
+```typescript
+const agent_exec = new InMemoryAgentExecutor();
+agent_exec.on(/Explore/, { text: '{"files": ["src/main.ts"]}' });
+agent_exec.on(/Analyze/, { text: '{"issues": [], "severity": "low"}' });
+agent_exec.on(/Review/, { text: '{"approved": true}' });
+```
+
+### Test Error Paths
+
+Don't register a pattern to trigger a "no scripted response" error. This tests how your workflow handles agent or shell failures:
+
+```typescript
+test("handles missing agent response", async () => {
+  const agent_exec = new InMemoryAgentExecutor();
+  // no .on() registered — agent will error
+
+  const engine = createEngine({ providers: { agent: agent_exec } });
+  const result = await engine.run(workflow, { code: "const x = 1;" });
+
+  expect(result.ok).toBe(false);
+});
+```
+
+### Delay Simulation
+
+Set `exec_delay_ms` or `prompt_delay_ms` to test timeout and abort behavior:
+
+```typescript
+const agent_exec = new InMemoryAgentExecutor();
+agent_exec.prompt_delay_ms = 5000; // simulate a slow agent
+agent_exec.on(/Analyze/, { text: '{"issues": []}' });
+```
+
+### Server API Tests
+
+Use Hono's `app.request()` to test server routes without starting a real HTTP server:
+
+```typescript
+import { createApp } from "@f0rbit/runbook-server";
+
+test("POST /workflows/:id/run", async () => {
+  const app = createApp({ workflows: [workflow], providers });
+  const res = await app.request("/workflows/code-review/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "const x = 1;" }),
+  });
+
+  expect(res.status).toBe(200);
+});
+```

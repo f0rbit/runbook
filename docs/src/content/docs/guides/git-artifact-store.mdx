@@ -1,0 +1,151 @@
+---
+title: Git Artifact Store
+description: Store workflow traces as git objects — content-addressed, invisible to git log, pushable to remotes.
+---
+
+## Overview
+
+The git artifact store persists workflow runs as git objects under `refs/runbook/runs/<run-id>`. These refs are **invisible to `git log`** — they live outside the normal commit graph and don't pollute your project history.
+
+Under the hood, it uses raw git commands (`git hash-object`, `git mktree`, `git update-ref`) to create content-addressed trees. No git library is required.
+
+```typescript
+import { createGitArtifactStore } from "@f0rbit/runbook-git-store";
+
+const store = createGitArtifactStore();
+```
+
+## Storage Layout
+
+Each run creates a tree under its ref:
+
+```
+refs/runbook/runs/<run-id>/
+  metadata.json      — workflow ID, input, output, timing, optional commit SHA
+  trace.json         — full typed event stream
+  steps/
+    <step-id>/
+      input.json     — step input
+      output.json    — step output
+      prompt.txt     — agent prompt (agent steps only)
+      response.json  — agent response (agent steps only)
+```
+
+Every file is a git blob, every directory is a git tree. The run ref points to the root tree object.
+
+## Storing Runs
+
+After running a workflow, store the result:
+
+```typescript
+import { createGitArtifactStore } from "@f0rbit/runbook-git-store";
+
+const store = createGitArtifactStore();
+
+const result = await store.store({
+  run_id: "run-123",
+  workflow_id: "code-review",
+  input: { code: "const x = 1;" },
+  output: { issues: [], severity: "low" },
+  trace: runResult.trace,
+  duration_ms: 1500,
+});
+```
+
+The store writes git objects and creates a ref at `refs/runbook/runs/run-123`.
+
+## Browsing Runs
+
+### CLI Commands
+
+```bash
+# List all stored runs
+runbook history
+
+# Show a specific run's metadata
+runbook show <run-id>
+
+# Show a specific step's artifacts
+runbook show <run-id> <step-id>
+
+# Diff two runs
+runbook diff <run-id-1> <run-id-2>
+```
+
+### Programmatic Access
+
+```typescript
+const runs = await store.list();
+const run = await store.get("run-123");
+const step = await store.getStep("run-123", "analyze");
+```
+
+## Push and Pull
+
+Artifact refs are pushable and pullable like any git ref. Share workflow runs with your team or archive them on a remote.
+
+### CLI
+
+```bash
+# Push artifact refs to remote
+runbook push
+runbook push --remote origin
+
+# Pull artifact refs from remote
+runbook pull
+runbook pull --remote origin
+```
+
+### Programmatic
+
+```typescript
+await store.push({ remote: "origin" });
+await store.pull({ remote: "origin" });
+```
+
+Under the hood, this runs:
+
+```bash
+# Push
+git push origin 'refs/runbook/runs/*:refs/runbook/runs/*'
+
+# Pull
+git fetch origin 'refs/runbook/runs/*:refs/runbook/runs/*'
+```
+
+## Linking to Commits
+
+Associate a run with a specific git commit SHA:
+
+```typescript
+await store.linkToCommit("run-123", "abc123def");
+```
+
+The commit SHA is stored in `metadata.json`. This enables tracing which workflow run produced or verified a given commit.
+
+## Why Git?
+
+**Content-addressed.** Every prompt, response, and tool call is hashed. Identical content produces identical blobs — no duplicated storage.
+
+**Invisible.** Refs under `refs/runbook/` don't appear in `git log`, `git branch`, or any standard git command. Your commit history stays clean.
+
+**Pushable.** Artifact refs can be pushed to and pulled from any git remote, independently of your branch refs. Share runs with teammates or archive them centrally.
+
+**Auditable.** Every agent interaction is recorded as a typed event stream. You can inspect exactly what prompt was sent, what the agent responded, and what tool calls it made.
+
+**Zero infrastructure.** No external storage service, no database, no S3 bucket. If you have a git repo, you have an artifact store.
+
+## Enabling in Config
+
+Enable the git artifact store in your `runbook.config.ts`:
+
+```typescript
+import { defineConfig } from "@f0rbit/runbook";
+
+export default defineConfig({
+  workflows: [/* ... */],
+  artifacts: { git: true },
+});
+```
+
+When enabled, the server automatically stores every workflow run after completion.

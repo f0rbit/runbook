@@ -10,9 +10,15 @@ export type { ResolvedProviders, ResolveError, VerifyError } from "./providers/r
 export { resolveProviders, verifyProviders } from "./providers/resolve";
 // Providers
 export { BunShellProvider } from "./providers/shell";
-export type { ServerDeps } from "./server";
+
+// Routes
+export type { RunDeps } from "./routes/runs";
+export type { WorkflowDeps } from "./routes/workflows";
+
 // Server
+export type { ServerDeps } from "./server";
 export { createServer } from "./server";
-export type { RunStateStore } from "./state";
+
 // State
+export type { RunStateStore } from "./state";
 export { createInMemoryStateStore } from "./state";

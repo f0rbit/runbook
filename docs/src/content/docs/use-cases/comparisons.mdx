@@ -1,0 +1,116 @@
+---
+title: "Comparisons"
+description: "How Runbook compares to LangChain, Temporal, GitHub Actions, raw scripting, and custom orchestrators."
+---
+
+# Comparisons
+
+Runbook occupies a specific niche: **typed workflow orchestration where AI agents are first-class step types**. Most tools in adjacent spaces solve different problems or make different trade-offs.
+
+---
+
+## vs LangChain / LlamaIndex
+
+LLM prompt chain libraries designed for prompt engineering and retrieval-augmented generation.
+
+| | LangChain / LlamaIndex | Runbook |
+|---|---|---|
+| **Primary focus** | Prompt engineering, RAG pipelines | Workflow orchestration with typed steps |
+| **Step types** | LLM calls, retrievers, tools | fn(), shell(), agent(), checkpoint() |
+| **Type safety** | Runtime validation only | Compile-time Zod schemas at every boundary |
+| **Shell execution** | Not built-in | First-class `shell()` step with typed parse |
+| **Human-in-the-loop** | Limited callback hooks | Native `checkpoint()` step with pause/resume |
+| **Testing** | Mock LLM responses | In-memory providers — no mocking required |
+| **Agent model** | Direct LLM API calls | `AgentExecutor` interface — pluggable executors |
+| **Trace format** | String logs, LangSmith integration | Typed `TraceEvent` stream, git artifact storage |
+
+**When to use LangChain:** You are building a RAG pipeline, need prompt templating, or want deep integration with vector stores and document loaders.
+
+**When to use Runbook:** You are orchestrating multi-step workflows where AI agents are one component alongside shell commands, human approvals, and typed data transformations.
+
+---
+
+## vs Temporal / Inngest
+
+Distributed workflow engines designed for microservice orchestration.
+
+| | Temporal / Inngest | Runbook |
+|---|---|---|
+| **Primary focus** | Distributed microservice workflows | AI agent orchestration |
+| **Runtime** | Temporal Server (Go), Workers (Java/Go/TS) | Single Bun process |
+| **Setup** | Cluster, database, workers | `bun run serve` |
+| **Step boundaries** | Activity interfaces | Zod schemas with compile-time checking |
+| **Agent support** | Build it yourself | Native `agent()` step with typed I/O |
+| **Human-in-the-loop** | Signal-based, custom UI required | Built-in `checkpoint()` with CLI stdin |
+| **Testing** | Replay-based, requires test server | In-memory providers, `bun test` |
+| **Durability** | Persistent, replay from event log | In-memory (v0.1), git artifact archive |
+| **Scale** | Distributed, multi-worker | Single process, local-first |
+
+**When to use Temporal:** You need distributed execution, durable workflows surviving process restarts, or microservice coordination at scale.
+
+**When to use Runbook:** You need a lightweight local runtime for AI agent workflows with typed step boundaries, structured traces, and instant testability. No cluster required.
+
+---
+
+## vs GitHub Actions / CI Systems
+
+Cloud-hosted CI/CD with YAML-based workflow definitions.
+
+| | GitHub Actions / CI | Runbook |
+|---|---|---|
+| **Definition format** | YAML | TypeScript |
+| **Type safety** | None — string interpolation | Zod schemas, compile-time checks |
+| **AI agent steps** | Shell out to CLI tools | Native `agent()` step with typed output |
+| **Human approval** | Environment protection rules | `checkpoint()` step — mid-workflow pause |
+| **Testing** | Run the workflow (slow, costly) | In-memory providers, `bun test` |
+| **Execution** | Cloud runners, Docker containers | Local Bun process |
+| **Traces** | Log lines | Typed `TraceEvent` stream |
+| **Composition** | Reusable workflows (limited) | `asStep()` — full sub-workflow composition |
+| **Branching** | `if:` conditions on steps | `fn()` steps with arbitrary TypeScript logic |
+
+**When to use GitHub Actions:** Standard CI/CD — build, test, deploy pipelines that run on push/PR events in cloud infrastructure.
+
+**When to use Runbook:** Workflows that include AI agent steps, need mid-workflow human approval, require typed output validation, or must be testable without cloud infrastructure.
+
+---
+
+## vs Raw Scripting
+
+Shell scripts and Node.js scripts glued together with `&&` and `|`.
+
+| | Shell / Node scripts | Runbook |
+|---|---|---|
+| **Step composition** | String concatenation, exit codes | Typed `pipe()` with Zod validation |
+| **Error handling** | `set -e`, try/catch | `Result<T, E>` at every boundary |
+| **Agent integration** | HTTP calls, parse JSON manually | `agent()` step with schema validation |
+| **Human gates** | `read -p` | `checkpoint()` with typed output |
+| **Testing** | Mock everything or don't test | In-memory providers, deterministic |
+| **Traces** | `echo` statements | Typed event stream |
+| **Parallel execution** | `&` and `wait` | `parallel()` with tuple-typed output |
+| **Reuse** | Source scripts, copy-paste | `asStep()` sub-workflow composition |
+
+**When to use scripts:** One-off automation, simple sequential tasks, no need for typed output or traceability.
+
+**When to use Runbook:** Multi-step workflows with AI agents, typed data flow, human checkpoints, or any pipeline you need to test and audit.
+
+---
+
+## vs Custom Orchestrators
+
+Building your own with Zod + fetch + Bun.spawn.
+
+| | Custom orchestrator | Runbook |
+|---|---|---|
+| **Initial effort** | Low for one workflow | Low — define steps, wire pipeline |
+| **Second workflow** | Duplicate plumbing | Reuse step builders and providers |
+| **Traces** | Build it yourself | Built-in typed event stream |
+| **Checkpoints** | Build pause/resume yourself | Native checkpoint with HTTP + CLI |
+| **Parallel fan-out** | Promise.all, type manually | `parallel()` with tuple types |
+| **Sub-workflows** | Call functions, lose type context | `asStep()` preserves full type chain |
+| **Git storage** | Build it yourself | `@f0rbit/runbook-git-store` |
+| **Test harness** | Build providers yourself | `@f0rbit/runbook/test` — ready to use |
+| **Maintenance** | You own all of it | Engine updates, provider additions |
+
+**When to build custom:** You have exactly one workflow with unique constraints that don't fit Runbook's step model.
+
+**When to use Runbook:** You have multiple workflows, need structured traces, want testability without mocking, or expect to add more agent-powered pipelines over time.

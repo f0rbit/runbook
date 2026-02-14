@@ -1,0 +1,228 @@
+---
+title: "Architecture"
+description: "System architecture, component overview, engine dispatch flow, provider wiring, and state management."
+---
+
+# Architecture Overview
+
+Runbook uses a **client/server architecture**. The engine runs in a persistent server process. The CLI is a thin HTTP client that submits runs and streams results.
+
+```
+┌─────────┐         ┌──────────────────────────────────────────────┐
+│   CLI   │──HTTP──▶│  Server (Hono)                               │
+│         │◀──SSE───│                                              │
+└─────────┘         │  ┌────────────────────────────────────────┐  │
+                    │  │  Engine                                 │  │
+                    │  │  ├── fn steps      (in-process)         │  │
+                    │  │  ├── shell steps   (ShellProvider)      │  │
+                    │  │  ├── agent steps   (AgentExecutor)      │  │
+                    │  │  └── checkpoint    (pause/resume)       │  │
+                    │  └────────────────────────────────────────┘  │
+                    │                                              │
+                    │  ┌──────────────────┐  ┌─────────────────┐  │
+                    │  │  State Store      │  │  Git Artifact   │  │
+                    │  │  (in-memory)      │  │  Store          │  │
+                    │  └──────────────────┘  └─────────────────┘  │
+                    └──────────────────────────────────────────────┘
+```
+
+---
+
+# Components
+
+## Server — `@f0rbit/runbook-server`
+
+Hono HTTP server that hosts the execution engine, manages run state, and dispatches steps to providers. Runs as a persistent process via `bun run serve`.
+
+**Responsibilities:**
+- Accept workflow run requests via HTTP
+- Create and manage `RunState` for each execution
+- Dispatch steps to the appropriate provider
+- Stream trace events to clients via SSE
+- Expose checkpoint endpoints for human approval flow
+
+## CLI — `@f0rbit/runbook-cli`
+
+Thin HTTP client published as the `runbook` binary. No business logic — all execution happens server-side.
+
+**Responsibilities:**
+- Submit workflow runs to the server
+- Stream real-time trace events via SSE
+- Handle checkpoint prompts via stdin
+- Discover config files (`--config` flag → `runbook.config.ts` in cwd → walk up → global fallback)
+
+## Core SDK — `@f0rbit/runbook`
+
+Type definitions, step builders, workflow builder, and trace types. Consumed by both the server and users who define workflows.
+
+**Exports:**
+- Step builders: `fn()`, `shell()`, `agent()`, `checkpoint()`
+- Workflow builder: `defineWorkflow()`, `.pipe()`, `.parallel()`, `.done()`
+- Sub-workflow composition: `.asStep()`
+- Trace types: `TraceEvent` and all 14 event type definitions
+- Test providers: `@f0rbit/runbook/test` subpath export
+
+No runtime dependencies beyond Zod and `@f0rbit/corpus`.
+
+## Git Store — `@f0rbit/runbook-git-store`
+
+Stores completed runs as git objects under `refs/runbook/runs/<run-id>`. Invisible to `git log` — does not pollute the repository's commit history.
+
+**Implementation:** Reads and writes git objects directly via `git hash-object`, `git mktree`, and `git update-ref`. No git library dependency.
+
+---
+
+# Engine Dispatch Flow
+
+```
+1. Client submits run via HTTP POST
+         │
+         ▼
+2. Server creates RunState, starts engine
+         │
+         ▼
+3. Engine iterates through workflow steps
+         │
+         ▼
+4. For each step:
+   ┌─────────────────────────────────────┐
+   │  Validate input against Zod schema  │
+   │              │                      │
+   │              ▼                      │
+   │  Dispatch based on step kind:       │
+   │  ├─ fn        → in-process call     │
+   │  ├─ shell     → ShellProvider       │
+   │  ├─ agent     → AgentExecutor       │
+   │  └─ checkpoint → pause/resume       │
+   │              │                      │
+   │              ▼                      │
+   │  Validate output against Zod schema │
+   │              │                      │
+   │              ▼                      │
+   │  Emit TraceEvent                    │
+   └─────────────────────────────────────┘
+         │
+         ▼
+5. On completion: store result, optionally archive to git store
+```
+
+Every step boundary is guarded by Zod validation. If input or output fails to parse, the engine produces a typed error — not a runtime exception.
+
+---
+
+# Provider Wiring
+
+`resolveProviders(config)` creates real providers from `ProviderConfig`:
+
+| Provider | Created when | Implementation |
+|---|---|---|
+| `ShellProvider` | Always | `BunShellProvider` — executes via `Bun.spawn` |
+| `AgentExecutor` | `agent.type === "opencode"` | `OpenCodeExecutor` — dispatches to OpenCode sessions |
+| `CheckpointProvider` | Always | `createServerCheckpointProvider()` — bridges engine pause with HTTP endpoint |
+
+Providers are **injected, never hardcoded**. The engine receives providers at construction time and dispatches to them by interface. Swap any provider for an in-memory fake in tests:
+
+```typescript
+import { createEngine } from "@f0rbit/runbook-server";
+import {
+  InMemoryShellProvider,
+  InMemoryAgentExecutor,
+  InMemoryCheckpointProvider,
+} from "@f0rbit/runbook/test";
+
+const engine = createEngine({
+  shell: new InMemoryShellProvider(),
+  agent: new InMemoryAgentExecutor(),
+  checkpoint: new InMemoryCheckpointProvider(),
+});
+```
+
+---
+
+# State Management
+
+v0.1 uses an **in-memory state store** (`createInMemoryStateStore()`). State is lost on server restart. SQLite + Drizzle persistence is planned for future versions.
+
+## RunState
+
+Each workflow execution produces a `RunState` with:
+
+| Field | Type | Description |
+|---|---|---|
+| `run_id` | `string` | Unique execution identifier |
+| `workflow_id` | `string` | ID of the workflow being executed |
+| `status` | `"pending" \| "running" \| "success" \| "failure" \| "cancelled"` | Current execution status |
+| `input` | `unknown` | Validated workflow input |
+| `output` | `unknown` | Final workflow output (on success) |
+| `error` | `StepError` | Error details (on failure) |
+| `trace` | `TraceEvent[]` | Complete event stream |
+| `started_at` | `Date` | Execution start time |
+| `completed_at` | `Date \| null` | Execution end time |
+| `pending_checkpoints` | `Checkpoint[]` | Checkpoints awaiting human input |
+
+---
+
+# Trace System
+
+Every execution produces a typed event stream. Events are emitted in real-time and are streamable to the CLI via SSE.
+
+**14 event types** covering the full lifecycle:
+
+| Category | Events |
+|---|---|
+| Workflow lifecycle | `workflow:start`, `workflow:complete`, `workflow:error` |
+| Step execution | `step:start`, `step:complete`, `step:error`, `step:skip` |
+| Agent sessions | `agent:session:create`, `agent:session:message`, `agent:session:complete` |
+| Checkpoints | `checkpoint:pending`, `checkpoint:resolved` |
+| Parallel execution | `parallel:start`, `parallel:complete` |
+
+Each event carries structured metadata — step ID, timestamps, input/output snapshots, duration. Traces are not string logs. They are typed objects you can filter, aggregate, and store.
+
+---
+
+# Agent Executor Dispatch
+
+When the engine encounters an `agent()` step, it dispatches to the `AgentExecutor` interface:
+
+```
+1. createSession({ working_directory, permissions })
+         │
+         ▼
+2. sendPrompt({ prompt, model, timeout_ms })
+         │
+         ▼
+3. Receive AgentResponse { text, metadata }
+         │
+         ▼
+4. Extract output based on mode:
+   ├─ "analyze" → parse JSON from response text
+   └─ "build"   → extract from session metadata
+         │
+         ▼
+5. Validate against step's Zod output schema
+```
+
+The `AgentExecutor` interface is intentionally minimal — `createSession` and `sendPrompt`. This makes it straightforward to implement new executors for different agent runtimes.
+
+---
+
+# Current Status
+
+**v0.1 — shipped:**
+- Linear pipelines with `pipe()`
+- Parallel fan-out/fan-in with `parallel()`
+- 4 step types: `fn()`, `shell()`, `agent()`, `checkpoint()`
+- In-memory state store
+- Git artifact storage
+- OpenCode executor
+- Sub-workflow composition via `asStep()`
+- `fn()` step escape hatch with `ctx.engine` for dynamic control flow
+
+**Future:**
+- SQLite persistence (Drizzle ORM)
+- Conditional branching
+- Retry policies
+- Workflow visualizer
+- Additional agent executors (Claude Code, Aider, Goose)
+- MCP integration
+- Node.js support

@@ -1,0 +1,352 @@
+---
+title: "@f0rbit/runbook"
+description: "Full API reference for the core SDK package — schemas, step builders, workflow builder, trace types, errors, and test providers."
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+The core SDK package. Published as `@f0rbit/runbook` on npm.
+
+```bash
+bun add @f0rbit/runbook
+```
+
+## Subpath Exports
+
+| Import Path | Contents |
+|-------------|----------|
+| `@f0rbit/runbook` | Schemas, step builders, types, workflow builder, trace collector, errors |
+| `@f0rbit/runbook/test` | In-memory test providers (`InMemoryShellProvider`, `InMemoryAgentExecutor`, `InMemoryCheckpointProvider`) |
+
+---
+
+## Schemas
+
+All schemas are [Zod](https://zod.dev) objects and serve as the source of truth for their corresponding TypeScript types.
+
+```typescript
+import { RunbookConfigSchema, TraceEventSchema } from "@f0rbit/runbook";
+```
+
+| Export | Description |
+|--------|-------------|
+| `AgentExecutorConfigSchema` | Agent executor configuration (`{ type: string }`) |
+| `AgentStepOptsSchema` | Agent step options — `model`, `agent_type`, `timeout_ms`, `system_prompt`, `system_prompt_file`, `permissions` |
+| `ArtifactsConfigSchema` | Artifacts config (`{ git?: boolean }`) |
+| `defineConfig` | Type-safe config helper (identity pass-through for editor autocomplete) |
+| `ProviderConfigSchema` | Provider configuration (shell, agent, checkpoint settings) |
+| `RunbookConfigSchema` | Full runbook config — `server`, `providers`, `artifacts`, `working_directory` |
+| `RunStateSchema` | Run state — `run_id`, `workflow_id`, `status`, `input`, `output`, `error`, timestamps |
+| `ServerConfigSchema` | Server config (`{ port?: number }`) |
+| `TraceEventSchema` | Discriminated union of 14 trace event types |
+| `TraceSchema` | Complete trace — `run_id`, `workflow_id`, `events`, `status`, `duration_ms` |
+| `WorkflowInfoSchema` | Workflow info — `id`, `input_schema`, `output_schema`, `step_count` |
+
+### `defineConfig`
+
+```typescript
+import { defineConfig } from "@f0rbit/runbook";
+
+export default defineConfig({
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  working_directory: process.cwd(),
+});
+```
+
+---
+
+## Step Builders
+
+Step builders create typed `Step<I, O>` objects for use in workflow pipelines.
+
+```typescript
+import { fn, shell, agent, checkpoint } from "@f0rbit/runbook";
+```
+
+### `fn`
+
+Create a step backed by an arbitrary function.
+
+```typescript
+fn<I, O>(opts: {
+  id: string;
+  input: z.ZodType<I>;
+  output: z.ZodType<O>;
+  description?: string;
+  run: (input: I, ctx: StepContext) => Promise<O> | O;
+}) => Step<I, O>
+```
+
+The `ctx.engine` property allows fn steps to run sub-workflows with inherited providers — enabling dynamic parallelism, conditional routing, retry loops, and multi-turn sessions.
+
+### `shell`
+
+Create a step that runs a shell command.
+
+```typescript
+shell<I, O>(opts: {
+  id: string;
+  input: z.ZodType<I>;
+  output: z.ZodType<O>;
+  description?: string;
+  command: (input: I) => string;
+  parse: (result: ShellResult, input: I) => O;
+}) => Step<I, O>
+```
+
+### `agent`
+
+Create a step that dispatches to an `AgentExecutor`.
+
+```typescript
+agent<I, O>(opts: {
+  id: string;
+  input: z.ZodType<I>;
+  output: z.ZodType<O>;
+  description?: string;
+  prompt: (input: I) => string;
+  mode?: AgentOutputMode;
+  agent_opts?: AgentStepOpts;
+}) => Step<I, O>
+```
+
+Two output modes:
+- `"analyze"` — JSON parsed from LLM text output
+- `"build"` — output extracted from session metadata
+
+Agent output is validated against the step's Zod output schema regardless of mode.
+
+### `checkpoint`
+
+Create a step that pauses execution for external input (human-in-the-loop).
+
+```typescript
+checkpoint<I, O>(opts: {
+  id: string;
+  input: z.ZodType<I>;
+  output: z.ZodType<O>;
+  description?: string;
+  prompt: (input: I) => string;
+}) => Step<I, O>
+```
+
+---
+
+## Workflow Builder
+
+```typescript
+import { defineWorkflow } from "@f0rbit/runbook";
+```
+
+### `defineWorkflow`
+
+```typescript
+defineWorkflow<WI>(input: z.ZodType<WI>) => WorkflowBuilder<WI, WI>
+```
+
+Returns a `WorkflowBuilder` with a fluent API:
+
+```typescript
+const workflow = defineWorkflow(z.object({ task: z.string() }))
+  .pipe(analyzeStep, (input) => ({ prompt: input.task }))
+  .pipe(buildStep, (input, prev) => ({ plan: prev.plan }))
+  .parallel([
+    { step: testStep, mapper: (input, prev) => prev },
+    { step: lintStep, mapper: (input, prev) => prev },
+  ])
+  .build({ id: "my-workflow" });
+```
+
+Key builder methods:
+
+| Method | Description |
+|--------|-------------|
+| `.pipe(step, mapper)` | Append a step. Mapper receives `(workflow_input, previous_step_output)` — both fully typed. |
+| `.parallel(defs)` | Fan out to multiple steps. Returns a tuple type of all parallel step outputs. |
+| `.build({ id })` | Finalize into a `Workflow` object. |
+| `.asStep()` | Wrap the workflow as a `Step` for composition into other workflows. |
+
+---
+
+## Trace
+
+```typescript
+import { TraceCollector } from "@f0rbit/runbook";
+```
+
+### `TraceCollector`
+
+Class implementing the `TraceEmitter` interface. Collects typed trace events during workflow execution.
+
+| Method | Signature |
+|--------|-----------|
+| `emit` | `(event: TraceEvent) => void` |
+| `onEvent` | `(listener: (event: TraceEvent) => void) => void` |
+| `toTrace` | `(run_id: string, workflow_id: string, status: string, duration_ms: number) => Trace` |
+
+Traces are typed event streams, not string logs. The `TraceEventSchema` is a discriminated union of 14 event types covering workflow lifecycle, step execution, agent interactions, and errors.
+
+---
+
+## Errors
+
+```typescript
+import { errors } from "@f0rbit/runbook";
+```
+
+The `errors` object provides constructors for all error types used in `Result<T, E>` returns:
+
+| Constructor | Description |
+|-------------|-------------|
+| `errors.validation` | Input/output schema validation failure |
+| `errors.execution` | General execution error |
+| `errors.shell` | Shell command failure |
+| `errors.agent` | Agent executor failure |
+| `errors.agent_parse` | Failed to parse agent output |
+| `errors.timeout` | Step exceeded `timeout_ms` |
+| `errors.aborted` | Run was cancelled |
+| `errors.checkpoint_rejected` | Checkpoint input rejected |
+| `errors.step_failed` | Generic step failure wrapper |
+| `errors.invalid_workflow` | Workflow definition error |
+| `errors.config_error` | Configuration loading/validation error |
+
+---
+
+## Type Exports
+
+All types are inferred from Zod schemas or defined alongside their modules. 42 type exports total.
+
+### Error Types
+
+| Type | Description |
+|------|-------------|
+| `AgentError` | Error from agent execution |
+| `CheckpointError` | Error from checkpoint resolution |
+| `ClientError` | Error from CLI/client operations |
+| `ShellError` | Error from shell command execution |
+| `StepError` | Generic step error wrapper |
+| `WorkflowError` | Workflow-level error |
+
+### Agent Types
+
+| Type | Description |
+|------|-------------|
+| `AgentEvent` | Event emitted during agent execution |
+| `AgentOutputMode` | `"analyze" \| "build"` |
+| `AgentPermission` | Permission granted to agent session |
+| `AgentResponse` | Response from agent execution |
+| `AgentSession` | Active agent session handle |
+| `AgentStepOpts` | Options for agent steps (model, timeout, permissions, etc.) |
+| `AgentToolCall` | Tool call made by agent |
+| `CreateSessionOpts` | Options for creating an agent session |
+| `PromptOpts` | Options for prompting an agent |
+
+### Provider Interfaces
+
+| Type | Description |
+|------|-------------|
+| `AgentExecutor` | Interface for agent execution backends |
+| `CheckpointProvider` | Interface for checkpoint (human-in-the-loop) backends |
+| `ShellProvider` | Interface for shell command execution |
+| `ShellOpts` | Options passed to shell provider |
+| `ShellResult` | Result from shell execution (stdout, stderr, exit code) |
+
+### Config Types
+
+| Type | Description |
+|------|-------------|
+| `AgentExecutorConfig` | Agent executor config (inferred from `AgentExecutorConfigSchema`) |
+| `ProviderConfig` | Provider config (inferred from `ProviderConfigSchema`) |
+| `RunbookConfig` | Full config (inferred from `RunbookConfigSchema`) |
+| `ServerConfig` | Server config (inferred from `ServerConfigSchema`) |
+
+### Workflow Types
+
+| Type | Description |
+|------|-------------|
+| `MapperFn` | `(workflow_input, previous_output) => step_input` |
+| `ParallelOutputTuple` | Tuple type of parallel step outputs |
+| `ParallelStepDef` | Definition for a parallel step (`{ step, mapper }`) |
+| `Workflow` | Finalized workflow object |
+| `WorkflowBuilder` | Fluent builder for constructing workflows |
+
+### Step Types
+
+| Type | Description |
+|------|-------------|
+| `Step` | Step object with typed input/output |
+| `StepContext` | Context passed to step `run` function (includes `engine` for sub-workflows) |
+| `StepKind` | `"fn" \| "shell" \| "agent" \| "checkpoint"` |
+| `StepNode` | Internal workflow graph node |
+
+### Engine & State Types
+
+| Type | Description |
+|------|-------------|
+| `EngineHandle` | Handle returned from engine.run() for tracking execution |
+| `RunResult` | Final result of a workflow run |
+| `RunState` | Run state (inferred from `RunStateSchema`) |
+| `PendingCheckpoint` | Checkpoint awaiting external input |
+
+### Trace Types
+
+| Type | Description |
+|------|-------------|
+| `Trace` | Complete trace (inferred from `TraceSchema`) |
+| `TraceEmitter` | Interface for emitting trace events |
+| `TraceEvent` | Union of 14 trace event types (inferred from `TraceEventSchema`) |
+
+---
+
+## Test Providers
+
+```typescript
+import {
+  InMemoryShellProvider,
+  InMemoryAgentExecutor,
+  InMemoryCheckpointProvider,
+} from "@f0rbit/runbook/test";
+```
+
+### `InMemoryShellProvider`
+
+Drop-in shell provider for tests. Script responses by command pattern.
+
+```typescript
+const shell = new InMemoryShellProvider();
+shell.on("tsc --noEmit", { stdout: "", stderr: "", exit_code: 0 });
+
+// After execution:
+shell.executed; // Array of { command, opts } for assertions
+```
+
+### `InMemoryAgentExecutor`
+
+Drop-in agent executor for tests. Script responses by prompt pattern.
+
+```typescript
+const agent = new InMemoryAgentExecutor();
+agent.on("analyze this code", {
+  output: { summary: "looks good" },
+  session_id: "test-1",
+});
+
+// After execution:
+agent.created_sessions; // Array of CreateSessionOpts
+agent.prompted;         // Array of { session_id, prompt, opts }
+```
+
+### `InMemoryCheckpointProvider`
+
+Drop-in checkpoint provider for tests. Script responses by prompt pattern.
+
+```typescript
+const checkpoints = new InMemoryCheckpointProvider();
+checkpoints.on("approve this plan", { approved: true });
+
+// After execution:
+checkpoints.prompted; // Array of { prompt, step_id }
+```

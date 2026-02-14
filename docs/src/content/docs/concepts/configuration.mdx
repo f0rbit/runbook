@@ -1,0 +1,194 @@
+---
+title: "Configuration"
+description: "Config file format, discovery priority, defineConfig(), server options, provider setup, and working directory propagation."
+---
+
+# Configuration
+
+Runbook uses a TypeScript config file for workflow definitions, server options, and provider setup. The config is type-safe with full autocomplete support.
+
+## defineConfig()
+
+Type-safe pass-through that provides autocomplete in config files.
+
+```typescript
+function defineConfig<T extends {
+  workflows: unknown[];
+  server?: ServerConfig;
+  providers?: ProviderConfig;
+  artifacts?: ArtifactsConfig;
+  working_directory?: string;
+}>(config: T): T
+```
+
+This is an identity function — it returns the config object unchanged. Its purpose is to give TypeScript the type information needed for autocomplete and validation in your editor.
+
+---
+
+## Config fields
+
+### workflows
+
+**Type:** `Workflow<any, any>[]`
+**Required:** Yes
+
+Array of workflow definitions. Each workflow is created with `defineWorkflow()` and finalized with `.done()`.
+
+### server
+
+**Type:** `ServerConfig`
+**Required:** No
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `port` | `number` | `4400` | HTTP server port |
+
+### providers
+
+**Type:** `ProviderConfig`
+**Required:** No
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agent` | `AgentProviderConfig` | Agent executor configuration |
+
+**AgentProviderConfig:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Provider type (e.g. `"opencode"`) |
+| `base_url` | `string` | Provider base URL |
+| `auto_approve` | `boolean` | Auto-approve agent actions |
+
+### artifacts
+
+**Type:** `ArtifactsConfig`
+**Required:** No
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `git` | `boolean` | `false` | Enable git-based artifact store for traces |
+
+### working_directory
+
+**Type:** `string`
+**Required:** No
+
+Working directory for the engine. Propagates to shell step `opts.cwd` and agent `createSession` working directory. Can be overridden at each level.
+
+---
+
+## Full example
+
+```typescript
+import { defineConfig, defineWorkflow, fn, shell, agent, checkpoint } from "@f0rbit/runbook";
+import { z } from "zod";
+import { ok } from "@f0rbit/corpus";
+
+const hello = fn({
+  id: "hello",
+  input: z.object({ name: z.string() }),
+  output: z.object({ greeting: z.string() }),
+  run: async (input) => ok({ greeting: `Hello, ${input.name}!` }),
+});
+
+const workflow = defineWorkflow(z.object({ name: z.string() }))
+  .pipe(hello, (wf) => ({ name: wf.name }))
+  .done("hello-world", z.object({ greeting: z.string() }));
+
+export default defineConfig({
+  workflows: [workflow],
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  artifacts: { git: true },
+  working_directory: process.cwd(),
+});
+```
+
+---
+
+## Config discovery
+
+The CLI searches for a config file in the following order:
+
+### Priority
+
+1. **`--config <path>` flag** — explicit path, used as-is
+2. **`runbook.config.ts` in current working directory** — project-local config
+3. **Walk up parent directories** — search for `runbook.config.ts` in each ancestor directory
+4. **`~/.config/runbook/runbook.config.ts`** — global fallback
+
+The first config file found is used. Local configs always take precedence over global.
+
+### Project-local config
+
+Place a `runbook.config.ts` in your project root. This is the typical setup:
+
+```
+my-project/
+├── src/
+├── runbook.config.ts   ← discovered automatically
+└── package.json
+```
+
+### Global config
+
+The global fallback at `~/.config/runbook/runbook.config.ts` enables user-wide workflow definitions separate from project configs. This is useful for personal workflows that apply across all projects:
+
+```
+~/.config/runbook/
+├── runbook.config.ts     ← global workflows
+├── prompts/              ← shared system prompts
+│   ├── coder.md
+│   └── reviewer.md
+└── schemas/              ← shared Zod schemas
+    └── common.ts
+```
+
+### Explicit config
+
+Override discovery with the `--config` flag:
+
+```bash
+runbook run my-workflow --config ./custom/runbook.config.ts
+```
+
+---
+
+## working_directory propagation
+
+The `working_directory` field propagates through the system:
+
+```
+RunbookConfig.working_directory
+  → Engine options
+    → ShellProvider opts.cwd (shell steps execute here)
+    → AgentExecutor createSession working_directory (agents start here)
+    → system_prompt_file resolution (relative paths resolved against this)
+```
+
+Each level can override the parent:
+
+- Config sets the default
+- Engine options can override the config
+- Individual step execution can override the engine
+
+### Relative system prompt paths
+
+When a `system_prompt_file` is specified with a relative path on an agent step, it is resolved against the engine's `working_directory`:
+
+```typescript
+const coder = agent({
+  id: "coder",
+  input: z.object({ task: z.string() }),
+  output: z.object({ result: z.string() }),
+  prompt: (input) => input.task,
+  agent_opts: {
+    system_prompt_file: "./prompts/coder.md", // resolved against working_directory
+  },
+});
+```
+
+Absolute paths are used as-is.
