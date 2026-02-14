@@ -55,7 +55,11 @@ export class OpenCodeExecutor implements AgentExecutor {
 	async createSession(opts: CreateSessionOpts): Promise<Result<AgentSession, AgentError>> {
 		try {
 			const result = await this.client.session.create({
-				body: { title: opts.title ?? "runbook-session" },
+				body: {
+					title: opts.title ?? "runbook-session",
+					...(opts.permissions ? { permission: opts.permissions } : {}),
+				},
+				...(opts.working_directory ? { query: { directory: opts.working_directory } } : {}),
 			});
 
 			const session = result?.data ?? result;

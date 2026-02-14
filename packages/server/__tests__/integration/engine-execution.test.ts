@@ -474,6 +474,39 @@ describe("engine execution", () => {
 		});
 	});
 
+	test("agent step passes permissions to createSession", async () => {
+		const agent_executor = new InMemoryAgentExecutor();
+		agent_executor.on(/.*/, { text: '{"result": "ok"}' });
+
+		const step = agent({
+			id: "explore",
+			input: z.object({ task: z.string() }),
+			output: z.object({ result: z.string() }),
+			prompt: (input) => `Explore: ${input.task}`,
+			mode: "analyze",
+			agent_opts: {
+				agent_type: "plan",
+				permissions: [
+					{ permission: "read", pattern: "*", action: "allow" as const },
+					{ permission: "edit", pattern: "*", action: "deny" as const },
+				],
+			},
+		});
+
+		const workflow = defineWorkflow(z.object({ task: z.string() }))
+			.pipe(step, (wi) => wi)
+			.done("perm-test", z.object({ result: z.string() }));
+
+		const engine = createEngine({ providers: { agent: agent_executor } });
+		await engine.run(workflow, { task: "test" });
+
+		expect(agent_executor.created_sessions.length).toBe(1);
+		expect(agent_executor.created_sessions[0].opts.permissions).toEqual([
+			{ permission: "read", pattern: "*", action: "allow" },
+			{ permission: "edit", pattern: "*", action: "deny" },
+		]);
+	});
+
 	describe("agent event streaming", () => {
 		test("agent_prompt_sent appears in trace", async () => {
 			const agent_executor = new InMemoryAgentExecutor();

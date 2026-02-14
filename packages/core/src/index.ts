@@ -27,6 +27,7 @@ export type {
 	AgentExecutor,
 	AgentExecutorConfig,
 	AgentOutputMode,
+	AgentPermission,
 	AgentResponse,
 	AgentSession,
 	AgentStepOpts,

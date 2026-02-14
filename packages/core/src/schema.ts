@@ -1,11 +1,18 @@
 import { z } from "zod";
 
+const AgentPermissionSchema = z.object({
+	permission: z.string(),
+	pattern: z.string(),
+	action: z.enum(["allow", "deny", "ask"]),
+});
+
 export const AgentStepOptsSchema = z.object({
 	model: z.object({ provider_id: z.string(), model_id: z.string() }).optional(),
 	agent_type: z.string().optional(),
 	timeout_ms: z.number().positive().optional(),
 	system_prompt: z.string().optional(),
 	system_prompt_file: z.string().optional(),
+	permissions: z.array(AgentPermissionSchema).optional(),
 });
 
 export const ServerConfigSchema = z.object({

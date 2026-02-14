@@ -399,6 +399,7 @@ async function executeAgentStep(
 		title: `runbook:${ctx.workflow_id}:${step.id}`,
 		system_prompt,
 		working_directory: engine_opts.working_directory,
+		permissions: agent_opts?.permissions,
 	});
 	if (!session_result.ok) return err(errors.agent(step.id, agentErrorMessage(session_result.error)));
 

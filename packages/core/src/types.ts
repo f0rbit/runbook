@@ -5,12 +5,19 @@ import type { z } from "zod";
 
 export type AgentOutputMode = "analyze" | "build";
 
+export type AgentPermission = {
+	permission: string;
+	pattern: string;
+	action: "allow" | "deny" | "ask";
+};
+
 export type AgentStepOpts = {
 	model?: { provider_id: string; model_id: string };
 	agent_type?: string;
 	timeout_ms?: number;
 	system_prompt?: string;
 	system_prompt_file?: string;
+	permissions?: AgentPermission[];
 };
 
 export type StepKind =
@@ -72,6 +79,7 @@ export type CreateSessionOpts = {
 	title?: string;
 	system_prompt?: string;
 	working_directory?: string;
+	permissions?: AgentPermission[];
 };
 
 export type AgentSession = {
