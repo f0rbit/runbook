@@ -41,6 +41,7 @@ export type StepContext = {
 	trace: TraceEmitter;
 	signal: AbortSignal;
 	engine: EngineHandle;
+	working_directory: string;
 };
 
 // --- Workflow types ---

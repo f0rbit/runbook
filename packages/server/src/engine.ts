@@ -106,6 +106,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 							trace,
 							signal: opts?.signal ?? new AbortController().signal,
 							engine,
+							working_directory: effective_opts.working_directory ?? process.cwd(),
 						},
 						effective_opts,
 					);
@@ -146,6 +147,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 								trace,
 								signal: parallel_controller.signal,
 								engine,
+								working_directory: effective_opts.working_directory ?? process.cwd(),
 							},
 							effective_opts,
 						);
@@ -211,6 +213,7 @@ type StepExecContext = {
 	trace: TraceCollector;
 	signal: AbortSignal;
 	engine: Engine;
+	working_directory: string;
 };
 
 async function executeStep(
@@ -265,6 +268,7 @@ async function executeStep(
 		trace: ctx_base.trace,
 		signal: ctx_base.signal,
 		engine: ctx_base.engine,
+		working_directory: ctx_base.working_directory,
 	};
 
 	let result: Result<unknown, StepError>;
