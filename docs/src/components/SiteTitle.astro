@@ -1,0 +1,28 @@
+---
+// SiteTitle override — runbook branding
+const { starlightRoute } = Astro.locals;
+const siteTitle = starlightRoute?.siteTitle;
+---
+
+<a href={siteTitle?.href ?? import.meta.env.BASE_URL} class="site-title">
+  <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink: 0;">
+    <path d="M2 3.993A1 1 0 0 1 2.992 3h18.016c.548 0 .992.445.992.993v16.014a1 1 0 0 1-.992.993H2.992A.993.993 0 0 1 2 20.007V3.993zM4 5v14h16V5H4zm2 2h6v6H6V7zm2 2v2h2V9H8zm-2 6h12v2H6v-2zm8-8h4v2h-4V7zm0 4h4v2h-4v-2z"/>
+  </svg>
+  <span>{siteTitle?.title ?? "@f0rbit/runbook"}</span>
+</a>
+
+<style>
+  .site-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs, 0.5rem);
+    text-decoration: none;
+    color: var(--fg, var(--sl-color-white));
+    font-size: var(--text-sm, 0.875rem);
+    font-weight: 500;
+    line-height: 1;
+  }
+  .site-title:hover {
+    color: var(--fg-muted, var(--sl-color-gray-1));
+  }
+</style>

@@ -1,0 +1,12 @@
+---
+// PageTitle override — handles splash template pages
+const { starlightRoute } = Astro.locals;
+const entry = starlightRoute?.entry;
+const isSplash = entry?.data?.template === "splash";
+---
+
+{isSplash ? (
+  <div class="splash-title-placeholder" />
+) : (
+  <h1 id="_top">{entry?.data?.title}</h1>
+)}
