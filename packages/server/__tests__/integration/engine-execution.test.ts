@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { err, ok } from "@f0rbit/corpus";
-import type { TraceEvent } from "@f0rbit/runbook";
+import type { AgentEvent, TraceEvent } from "@f0rbit/runbook";
 import { agent, checkpoint, defineWorkflow, fn, shell } from "@f0rbit/runbook";
 import { InMemoryAgentExecutor, InMemoryCheckpointProvider, InMemoryShellProvider } from "@f0rbit/runbook/test";
 import { z } from "zod";
@@ -471,6 +471,112 @@ describe("engine execution", () => {
 			expect(result.ok).toBe(false);
 			if (result.ok) return;
 			expect(result.error.kind).toBe("step_failed");
+		});
+	});
+
+	describe("agent event streaming", () => {
+		test("agent_prompt_sent appears in trace", async () => {
+			const agent_executor = new InMemoryAgentExecutor();
+			agent_executor.on(/.*/, { text: '{"result": "ok"}' });
+
+			const step = agent({
+				id: "analyze",
+				input: z.object({ task: z.string() }),
+				output: z.object({ result: z.string() }),
+				prompt: (input) => `Analyze: ${input.task}`,
+				mode: "analyze",
+			});
+
+			const workflow = defineWorkflow(z.object({ task: z.string() }))
+				.pipe(step, (wi) => wi)
+				.done("test-wf", z.object({ result: z.string() }));
+
+			const engine = createEngine({ providers: { agent: agent_executor } });
+			const result = await engine.run(workflow, { task: "test" });
+
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+
+			const events = result.value.trace.events;
+			const prompt_sent = events.find((e) => e.type === "agent_prompt_sent");
+			expect(prompt_sent).toBeDefined();
+			expect(prompt_sent?.type === "agent_prompt_sent" && prompt_sent.text).toContain("Analyze: test");
+		});
+
+		test("subscribe is called and cleaned up for agent steps", async () => {
+			const agent_executor = new InMemoryAgentExecutor();
+			agent_executor.on(/.*/, { text: '{"result": "ok"}' });
+
+			let subscribed_session_id: string | null = null;
+			let unsubscribed = false;
+
+			const original_subscribe = agent_executor.subscribe.bind(agent_executor);
+			agent_executor.subscribe = (session_id: string, handler: (event: AgentEvent) => void) => {
+				subscribed_session_id = session_id;
+				const unsub = original_subscribe(session_id, handler);
+				return () => {
+					unsubscribed = true;
+					unsub();
+				};
+			};
+
+			const step = agent({
+				id: "analyze",
+				input: z.object({ task: z.string() }),
+				output: z.object({ result: z.string() }),
+				prompt: (input) => `Analyze: ${input.task}`,
+				mode: "analyze",
+			});
+
+			const workflow = defineWorkflow(z.object({ task: z.string() }))
+				.pipe(step, (wi) => wi)
+				.done("subscribe-test", z.object({ result: z.string() }));
+
+			const engine = createEngine({ providers: { agent: agent_executor } });
+			await engine.run(workflow, { task: "test" });
+
+			expect(subscribed_session_id).not.toBeNull();
+			expect(unsubscribed).toBe(true);
+		});
+
+		test("emitted agent events appear in trace", async () => {
+			const agent_executor = new InMemoryAgentExecutor();
+			agent_executor.prompt_delay_ms = 50;
+			agent_executor.on(/.*/, { text: '{"result": "ok"}' });
+
+			const step = agent({
+				id: "analyze",
+				input: z.object({ task: z.string() }),
+				output: z.object({ result: z.string() }),
+				prompt: (input) => `Analyze: ${input.task}`,
+				mode: "analyze",
+			});
+
+			const workflow = defineWorkflow(z.object({ task: z.string() }))
+				.pipe(step, (wi) => wi)
+				.done("events-test", z.object({ result: z.string() }));
+
+			const engine = createEngine({ providers: { agent: agent_executor } });
+
+			const run_promise = engine.run(workflow, { task: "test" });
+
+			// Wait for engine to subscribe, then emit events during prompt delay
+			await Bun.sleep(10);
+			const session_id = agent_executor.created_sessions[0]?.id;
+			if (session_id) {
+				agent_executor.emitEvent(session_id, {
+					type: "tool_call",
+					session_id,
+					call: { tool: "read", args: { path: "/foo.ts" } },
+				});
+			}
+
+			const result = await run_promise;
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+
+			const tool_calls = result.value.trace.events.filter((e) => e.type === "agent_tool_call");
+			expect(tool_calls.length).toBeGreaterThanOrEqual(1);
 		});
 	});
 });

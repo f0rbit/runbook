@@ -410,10 +410,43 @@ async function executeAgentStep(
 		timestamp: new Date(),
 	});
 
+	// Subscribe to agent events for real-time streaming
+	const unsubscribe = executor.subscribe?.(session.id, (event) => {
+		switch (event.type) {
+			case "tool_call":
+				ctx.trace.emit({
+					type: "agent_tool_call",
+					step_id: step.id,
+					session_id: event.session_id,
+					call: event.call,
+					timestamp: new Date(),
+				});
+				break;
+			case "tool_result":
+				ctx.trace.emit({
+					type: "agent_tool_result",
+					step_id: step.id,
+					session_id: event.session_id,
+					tool: event.tool,
+					result: event.result,
+					timestamp: new Date(),
+				});
+				break;
+		}
+	});
+
 	const final_prompt_text =
 		mode === "analyze"
 			? `${prompt_text}\n\nIMPORTANT: Your final response MUST be a JSON object matching the required schema. Do not include any other text outside the JSON.`
 			: prompt_text;
+
+	ctx.trace.emit({
+		type: "agent_prompt_sent",
+		step_id: step.id,
+		session_id: session.id,
+		text: final_prompt_text,
+		timestamp: new Date(),
+	});
 
 	const response_result = await executor.prompt(session.id, {
 		text: final_prompt_text,
@@ -423,6 +456,9 @@ async function executeAgentStep(
 		timeout_ms: agent_opts?.timeout_ms,
 		signal: ctx.signal,
 	});
+
+	// Stop event streaming
+	unsubscribe?.();
 
 	if (!response_result.ok) return err(errors.agent(step.id, agentErrorMessage(response_result.error)));
 

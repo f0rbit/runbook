@@ -3,6 +3,7 @@ import { err, ok } from "@f0rbit/corpus";
 import type { z } from "zod";
 import type {
 	AgentError,
+	AgentEvent,
 	AgentExecutor,
 	AgentResponse,
 	AgentSession,
@@ -55,6 +56,7 @@ export class InMemoryShellProvider implements ShellProvider {
 export class InMemoryAgentExecutor implements AgentExecutor {
 	private responses: Array<{ pattern: RegExp; response: AgentResponse }> = [];
 	private sessions: Map<string, { title?: string }> = new Map();
+	event_handlers: Map<string, Array<(event: AgentEvent) => void>> = new Map();
 	prompted: Array<{ session_id: string; opts: PromptOpts }> = [];
 	created_sessions: Array<{ id: string; opts: CreateSessionOpts }> = [];
 	destroyed_sessions: string[] = [];
@@ -100,6 +102,26 @@ export class InMemoryAgentExecutor implements AgentExecutor {
 		const match = this.responses.find((r) => r.pattern.test(opts.text));
 		if (!match) return err({ kind: "prompt_failed", session_id, cause: "no scripted response" });
 		return ok({ ...match.response, session_id });
+	}
+
+	subscribe(session_id: string, handler: (event: AgentEvent) => void): () => void {
+		const handlers = this.event_handlers.get(session_id) ?? [];
+		handlers.push(handler);
+		this.event_handlers.set(session_id, handlers);
+		return () => {
+			const h = this.event_handlers.get(session_id);
+			if (h)
+				this.event_handlers.set(
+					session_id,
+					h.filter((x) => x !== handler),
+				);
+		};
+	}
+
+	emitEvent(session_id: string, event: AgentEvent): void {
+		for (const handler of this.event_handlers.get(session_id) ?? []) {
+			handler(event);
+		}
 	}
 
 	async destroySession(session_id: string): Promise<Result<void, AgentError>> {

@@ -243,14 +243,18 @@ export function formatStepEvent(event: TraceEvent): string {
 		case "checkpoint_resolved":
 			return `  ${GREEN}▶${RESET} ${event.step_id} checkpoint resolved`;
 		case "agent_session_created":
-			return `  ${DIM}agent session ${event.session.id.slice(0, 8)} created${RESET}`;
+			return `  ${DIM}session ${event.session.id.slice(0, 12)} created${RESET}`;
 		case "agent_prompt_sent":
-			return `  ${DIM}→ prompt sent${RESET}`;
-		case "agent_tool_call":
-			return `  ${DIM}⚡ ${event.call.tool}${RESET}`;
+			return `    ${DIM}→ prompt (${event.text.length} chars)${RESET}`;
+		case "agent_tool_call": {
+			const args = event.call.args;
+			const detail = args.path ?? args.filePath ?? args.pattern ?? args.command ?? args.url ?? "";
+			const detail_str = detail ? ` ${String(detail).slice(0, 60)}` : "";
+			return `    ${DIM}⚡ ${event.call.tool}${detail_str}${RESET}`;
+		}
 		case "agent_tool_result":
-			return `  ${DIM}← ${event.tool}${RESET}`;
+			return `    ${DIM}← ${event.tool}${RESET}`;
 		case "agent_response":
-			return `  ${DIM}agent response (${formatDuration(event.response.metadata.duration_ms)})${RESET}`;
+			return `    ${DIM}agent response (${formatDuration(event.response.metadata.duration_ms)})${RESET}`;
 	}
 }

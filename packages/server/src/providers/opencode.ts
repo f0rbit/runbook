@@ -4,6 +4,7 @@ import type { Result } from "@f0rbit/corpus";
 import { err, ok } from "@f0rbit/corpus";
 import type {
 	AgentError,
+	AgentEvent,
 	AgentExecutor,
 	AgentResponse,
 	AgentSession,
@@ -255,6 +256,111 @@ export class OpenCodeExecutor implements AgentExecutor {
 				cause: `Failed to destroy session ${session_id}: ${e instanceof Error ? e.message : String(e)}`,
 			});
 		}
+	}
+
+	subscribe(session_id: string, handler: (event: AgentEvent) => void): () => void {
+		const controller = new AbortController();
+		this.consumeEvents(session_id, handler, controller.signal);
+		return () => controller.abort();
+	}
+
+	private async consumeEvents(
+		session_id: string,
+		handler: (event: AgentEvent) => void,
+		signal: AbortSignal,
+	): Promise<void> {
+		const seen_parts = new Set<string>();
+		const child_ids = new Set<string>();
+
+		while (!signal.aborted) {
+			await Bun.sleep(3000);
+			if (signal.aborted) break;
+
+			try {
+				const sessions_to_check = [session_id, ...child_ids];
+
+				for (const sid of sessions_to_check) {
+					const messages = await this.getSessionMessages(sid);
+					for (const msg of messages) {
+						for (const part of msg.parts ?? []) {
+							const part_id = part.id ?? `${msg.id}_${part.type}_${part.tool}`;
+
+							if (part.type === "tool" && part.state) {
+								const status = part.state.status;
+								if (status === "running" || status === "completed") {
+									const key = `${part_id}_${status}`;
+									if (seen_parts.has(key)) continue;
+									seen_parts.add(key);
+
+									if (status === "running") {
+										handler({
+											type: "tool_call",
+											session_id: sid,
+											call: {
+												tool: part.tool ?? "unknown",
+												args: (part.state.input as Record<string, unknown>) ?? {},
+											},
+										});
+									} else {
+										handler({
+											type: "tool_result",
+											session_id: sid,
+											tool: part.tool ?? "unknown",
+											result:
+												typeof part.state.output === "string"
+													? part.state.output
+													: JSON.stringify(part.state.output ?? ""),
+										});
+									}
+								}
+							}
+						}
+					}
+				}
+
+				// Discover child sessions
+				try {
+					const all_sessions_result = await this.client.session.list();
+					const all_sessions = all_sessions_result?.data ?? all_sessions_result;
+					if (Array.isArray(all_sessions)) {
+						for (const s of all_sessions) {
+							if (s.parentID === session_id && !child_ids.has(s.id)) {
+								child_ids.add(s.id);
+								handler({
+									type: "tool_call",
+									session_id,
+									call: {
+										tool: `subagent:${s.title ?? "unknown"}`,
+										args: {},
+									},
+								});
+							}
+						}
+					}
+				} catch {
+					// Best effort
+				}
+			} catch {
+				// Transient error — keep polling
+			}
+		}
+	}
+
+	private async getSessionMessages(session_id: string): Promise<any[]> {
+		try {
+			const base_url = this.getBaseUrl();
+			const res = await fetch(`${base_url}/session/${session_id}/message`, {
+				headers: { Accept: "application/json" },
+			});
+			if (!res.ok) return [];
+			return await res.json();
+		} catch {
+			return [];
+		}
+	}
+
+	private getBaseUrl(): string {
+		return (this.client as any)?._config?.baseUrl ?? (this.client as any)?.config?.baseUrl ?? "http://localhost:4096";
 	}
 
 	async healthCheck(): Promise<Result<void, AgentError>> {
