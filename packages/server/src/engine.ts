@@ -500,11 +500,82 @@ async function executeAgentStep(
 		return ok(parsed.data);
 	}
 
-	const json_result = extractJson(response.text);
+	let json_result = extractJson(response.text);
+
+	// Retry: if no JSON found, send a follow-up prompt asking for just the JSON
+	if (!json_result.ok) {
+		const retry_prompt = [
+			"Your response did not contain valid JSON.",
+			"",
+			"Please respond with ONLY the JSON object matching the required schema.",
+			"No explanation, no markdown, no code fences.",
+			"Start your response with { and end with }.",
+		].join("\n");
+
+		ctx.trace.emit({
+			type: "agent_prompt_sent",
+			step_id: step.id,
+			session_id: session.id,
+			text: retry_prompt,
+			timestamp: new Date(),
+		});
+
+		const retry_result = await executor.prompt(session.id, {
+			text: retry_prompt,
+			model: agent_opts?.model,
+			agent_type: agent_opts?.agent_type,
+			timeout_ms: 60_000,
+			signal: ctx.signal,
+		});
+
+		if (retry_result.ok) {
+			json_result = extractJson(retry_result.value.text);
+		}
+	}
+
 	if (!json_result.ok) return err(errors.agent_parse(step.id, response.text, []));
 
 	const parsed = step.output.safeParse(json_result.value);
-	if (!parsed.success) return err(errors.agent_parse(step.id, response.text, parsed.error.issues));
+	if (!parsed.success) {
+		// One more retry: if JSON was found but doesn't match schema, show the issues
+		const fix_prompt = [
+			"The JSON you provided does not match the required schema.",
+			"",
+			"Validation errors:",
+			...parsed.error.issues.map((i) => `- ${i.path.join(".")}: ${i.message}`),
+			"",
+			"Please fix these issues and respond with ONLY the corrected JSON object.",
+		].join("\n");
+
+		ctx.trace.emit({
+			type: "agent_prompt_sent",
+			step_id: step.id,
+			session_id: session.id,
+			text: fix_prompt,
+			timestamp: new Date(),
+		});
+
+		const fix_result = await executor.prompt(session.id, {
+			text: fix_prompt,
+			model: agent_opts?.model,
+			agent_type: agent_opts?.agent_type,
+			timeout_ms: 60_000,
+			signal: ctx.signal,
+		});
+
+		if (fix_result.ok) {
+			const fix_json = extractJson(fix_result.value.text);
+			if (fix_json.ok) {
+				const fix_parsed = step.output.safeParse(fix_json.value);
+				if (fix_parsed.success) {
+					executor.destroySession?.(session.id).catch(() => {});
+					return ok(fix_parsed.data);
+				}
+			}
+		}
+
+		return err(errors.agent_parse(step.id, response.text, parsed.error.issues));
+	}
 
 	executor.destroySession?.(session.id).catch(() => {});
 	return ok(parsed.data);
