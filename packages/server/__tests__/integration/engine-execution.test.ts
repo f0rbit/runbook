@@ -394,7 +394,7 @@ describe("engine execution", () => {
 			if (result.ok) return;
 			expect(result.error.kind).toBe("step_failed");
 			if (result.error.kind !== "step_failed") return;
-			expect(agent_executor.destroyed_sessions.length).toBeGreaterThanOrEqual(1);
+			expect(agent_executor.destroyed_sessions).toHaveLength(0);
 		});
 
 		test("destroySession called on normal agent completion", async () => {

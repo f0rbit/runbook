@@ -112,7 +112,32 @@ export class OpenCodeExecutor implements AgentExecutor {
 				} catch {
 					// Session may already be finished
 				}
-				return err({ kind: "timeout", session_id, timeout_ms: stale_timeout_ms });
+
+				// Collect session activity summary for debugging
+				let activity_summary = "";
+				try {
+					const session_result = await this.client.session.get({ path: { id: session_id } });
+					const session_data = session_result?.data ?? session_result;
+					activity_summary += `Session ${session_id} (${session_data?.title ?? "untitled"})`;
+
+					const all_sessions_result = await this.client.session.list();
+					const all_sessions = all_sessions_result?.data ?? all_sessions_result;
+					if (Array.isArray(all_sessions)) {
+						const children = all_sessions.filter((s: any) => s.parentID === session_id);
+						if (children.length > 0) {
+							activity_summary += `\n  Child sessions: ${children.map((c: any) => `${c.id.slice(0, 12)} (${c.title?.slice(0, 40) ?? "?"})`).join(", ")}`;
+						}
+					}
+				} catch {
+					// Best effort
+				}
+
+				const cause = activity_summary
+					? `Agent stalled after ${stale_timeout_ms}ms — inspect with: opencode attach ${session_id}\n  ${activity_summary}`
+					: `Agent stalled after ${stale_timeout_ms}ms — inspect with: opencode attach ${session_id}`;
+
+				// Don't destroy — leave session alive for debugging
+				return err({ kind: "prompt_failed", session_id, cause });
 			}
 
 			const response = result.data?.data ?? result.data;
@@ -142,8 +167,8 @@ export class OpenCodeExecutor implements AgentExecutor {
 		}
 	}
 
-	// Polls session.get() for time.updated changes. Resolves when no activity
-	// has been observed for stale_timeout_ms, signalling the session is stalled.
+	// Polls session status, parent time.updated, and child session activity.
+	// Resolves when no activity has been observed for stale_timeout_ms.
 	// Returns (never resolves) if the prompt finishes first (monitor_active → false).
 	private async monitorActivity(
 		session_id: string,
@@ -155,22 +180,58 @@ export class OpenCodeExecutor implements AgentExecutor {
 
 		while (is_active()) {
 			await Bun.sleep(5000);
-
 			if (!is_active() || signal?.aborted) return;
 
 			try {
+				// Check session status first — if busy, the session is actively working
+				try {
+					const status_result = await this.client.session.status();
+					const status_map = status_result?.data ?? status_result;
+					const session_status = status_map?.[session_id];
+					if (session_status?.type === "busy") {
+						last_activity = Date.now();
+						continue;
+					}
+				} catch {
+					// Status endpoint may not be available — fall through to time check
+				}
+
+				// Check time.updated on parent session
 				const session_result = await this.client.session.get({ path: { id: session_id } });
 				const session_data = session_result?.data ?? session_result;
-				const updated_at = session_data?.time?.updated;
+				const parent_updated = session_data?.time?.updated;
 
-				if (updated_at) {
-					const updated_ms = typeof updated_at === "number" ? updated_at : new Date(updated_at).getTime();
+				if (parent_updated) {
+					const updated_ms = typeof parent_updated === "number" ? parent_updated : new Date(parent_updated).getTime();
 					if (updated_ms > last_activity) {
 						last_activity = updated_ms;
+						continue;
 					}
 				}
+
+				// Check child sessions' activity
+				try {
+					const all_sessions_result = await this.client.session.list();
+					const all_sessions = all_sessions_result?.data ?? all_sessions_result;
+					if (Array.isArray(all_sessions)) {
+						for (const s of all_sessions) {
+							if (s.parentID === session_id) {
+								const child_updated = s.time?.updated;
+								if (child_updated) {
+									const child_ms =
+										typeof child_updated === "number" ? child_updated : new Date(child_updated).getTime();
+									if (child_ms > last_activity) {
+										last_activity = child_ms;
+									}
+								}
+							}
+						}
+					}
+				} catch {
+					// List may fail — that's ok, we still have the parent check
+				}
 			} catch {
-				// Transient fetch error — keep polling
+				// Transient error — keep polling
 			}
 
 			const idle_ms = Date.now() - last_activity;

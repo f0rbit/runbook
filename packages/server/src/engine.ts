@@ -424,9 +424,6 @@ async function executeAgentStep(
 		signal: ctx.signal,
 	});
 
-	// Clean up session (fire-and-forget)
-	executor.destroySession?.(session.id).catch(() => {});
-
 	if (!response_result.ok) return err(errors.agent(step.id, agentErrorMessage(response_result.error)));
 
 	const response: AgentResponse = response_result.value;
@@ -444,6 +441,7 @@ async function executeAgentStep(
 		};
 		const parsed = step.output.safeParse(output_candidate);
 		if (!parsed.success) return err(errors.validation(step.id, parsed.error.issues));
+		executor.destroySession?.(session.id).catch(() => {});
 		return ok(parsed.data);
 	}
 
@@ -453,6 +451,7 @@ async function executeAgentStep(
 	const parsed = step.output.safeParse(json_result.value);
 	if (!parsed.success) return err(errors.agent_parse(step.id, response.text, parsed.error.issues));
 
+	executor.destroySession?.(session.id).catch(() => {});
 	return ok(parsed.data);
 }
 
@@ -498,6 +497,6 @@ function agentErrorMessage(error: AgentError): string {
 		case "prompt_failed":
 			return error.cause;
 		case "timeout":
-			return `Agent timed out after ${error.timeout_ms}ms`;
+			return `Agent timed out after ${error.timeout_ms}ms — inspect with: opencode attach ${error.session_id}`;
 	}
 }
