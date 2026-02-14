@@ -500,16 +500,20 @@ async function executeAgentStep(
 		return ok(parsed.data);
 	}
 
+	const schema_text = JSON.stringify(zodToJsonSchema(step.output), null, 2);
 	let json_result = extractJson(response.text);
 
-	// Retry: if no JSON found, send a follow-up prompt asking for just the JSON
+	// Retry: if no JSON found, send a follow-up prompt with the schema
 	if (!json_result.ok) {
 		const retry_prompt = [
 			"Your response did not contain valid JSON.",
 			"",
-			"Please respond with ONLY the JSON object matching the required schema.",
-			"No explanation, no markdown, no code fences.",
-			"Start your response with { and end with }.",
+			"Respond with ONLY a JSON object matching this schema:",
+			"```json",
+			schema_text,
+			"```",
+			"",
+			"No explanation, no markdown outside the JSON. Start with { and end with }.",
 		].join("\n");
 
 		ctx.trace.emit({
@@ -537,14 +541,19 @@ async function executeAgentStep(
 
 	const parsed = step.output.safeParse(json_result.value);
 	if (!parsed.success) {
-		// One more retry: if JSON was found but doesn't match schema, show the issues
+		// Retry: JSON found but doesn't match schema — show errors + schema
 		const fix_prompt = [
 			"The JSON you provided does not match the required schema.",
 			"",
 			"Validation errors:",
 			...parsed.error.issues.map((i) => `- ${i.path.join(".")}: ${i.message}`),
 			"",
-			"Please fix these issues and respond with ONLY the corrected JSON object.",
+			"Required schema:",
+			"```json",
+			schema_text,
+			"```",
+			"",
+			"Respond with ONLY the corrected JSON object.",
 		].join("\n");
 
 		ctx.trace.emit({
