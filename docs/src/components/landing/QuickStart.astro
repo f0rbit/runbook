@@ -1,0 +1,83 @@
+---
+import Section from './Section.astro';
+import { Code } from 'astro-expressive-code/components';
+
+const steps = [
+  {
+    title: "Install the packages",
+    code: "bun add @f0rbit/runbook @f0rbit/runbook-server zod",
+    lang: "bash" as const,
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.29 7 12 12 20.71 7"/><line x1="12" x2="12" y1="22" y2="12"/></svg>`
+  },
+  {
+    title: "Define a workflow",
+    code: `import { agent, defineWorkflow } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: z.object({ 
+    issues: z.array(z.string()), 
+    severity: z.enum(["low", "medium", "high"]) 
+  }),
+  prompt: (input) => \`Analyze this code:\\n\${input.code}\`,
+});
+
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .pipe(analyze, (wf) => ({ code: wf.code }))
+  .done("code-review", z.object({ 
+    issues: z.array(z.string()), 
+    severity: z.enum(["low", "medium", "high"]) 
+  }));`,
+    lang: "typescript" as const,
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`
+  },
+  {
+    title: "Run with the engine",
+    code: `import { createEngine } from "@f0rbit/runbook-server";
+
+const engine = createEngine();
+const result = await engine.run(workflow, { code: "function add(a, b) { return a + b }" });
+
+if (result.ok) {
+  console.log(result.value.output);
+  // { issues: [...], severity: "low" }
+}`,
+    lang: "typescript" as const,
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`
+  }
+];
+---
+
+<Section title="Quick Start" bordered>
+  <div class="stepper stepper-vertical">
+    {steps.map((step, index) => (
+      <div class="step vertical-connector-item">
+        <div class="step-indicator vertical-indicator" set:html={step.icon} />
+        <div class="step-content vertical-content">
+          <div class="step-title">{step.title}</div>
+          <Code code={step.code} lang={step.lang} />
+        </div>
+        {index < steps.length - 1 && <div class="step-connector vertical-connector" />}
+      </div>
+    ))}
+  </div>
+</Section>
+
+<style>
+  .step-content :global(.expressive-code) {
+    margin: var(--space-sm) 0 0 0;
+  }
+
+  .step-content :global(.expressive-code .frame) {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: none;
+  }
+
+  .step-content :global(.expressive-code pre) {
+    background: var(--code-background, var(--bg-alt)) !important;
+    border: none;
+  }
+</style>

@@ -11,7 +11,6 @@ export default defineConfig({
 			title: "@f0rbit/runbook",
 			customCss: ["./src/styles/custom.css"],
 			components: {
-				ThemeSelect: "./src/components/ThemeSelect.astro",
 				PageTitle: "./src/components/PageTitle.astro",
 				SiteTitle: "./src/components/SiteTitle.astro",
 				Footer: "./src/components/Footer.astro",
