@@ -115,8 +115,22 @@ export class OpenCodeExecutor implements AgentExecutor {
 		}
 	}
 
-	async destroySession(_session_id: string): Promise<Result<void, AgentError>> {
-		return ok(undefined);
+	async destroySession(session_id: string): Promise<Result<void, AgentError>> {
+		try {
+			try {
+				await this.client.session.abort({ path: { id: session_id } });
+			} catch {
+				// Session may already be finished — continue to delete
+			}
+
+			await this.client.session.delete({ path: { id: session_id } });
+			return ok(undefined);
+		} catch (e) {
+			return err({
+				kind: "session_failed",
+				cause: `Failed to destroy session ${session_id}: ${e instanceof Error ? e.message : String(e)}`,
+			});
+		}
 	}
 
 	async healthCheck(): Promise<Result<void, AgentError>> {

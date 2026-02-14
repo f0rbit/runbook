@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { handleCancel } from "./commands/cancel";
 import { handleDiff } from "./commands/diff";
 import { handleHistory } from "./commands/history";
 import { handleList } from "./commands/list";
@@ -32,6 +33,7 @@ Commands:
   show <run-id> [step-id]      Show run or step artifacts
   diff <run-id-1> <run-id-2>   Diff two stored runs
   push [--remote origin]       Push artifact refs to remote
+  cancel [run-id]              Cancel a running workflow
   pull [--remote origin]       Pull artifact refs from remote
 
 Options:
@@ -71,6 +73,9 @@ switch (cmd) {
 		break;
 	case "push":
 		await handlePush(rest);
+		break;
+	case "cancel":
+		await handleCancel(rest, getBaseUrl(args));
 		break;
 	case "pull":
 		await handlePull(rest);
