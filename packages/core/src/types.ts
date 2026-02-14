@@ -150,6 +150,7 @@ export type TraceEvent =
 	| { type: "agent_prompt_sent"; step_id: string; session_id: string; text: string; timestamp: Date }
 	| { type: "agent_tool_call"; step_id: string; session_id: string; call: AgentToolCall; timestamp: Date }
 	| { type: "agent_tool_result"; step_id: string; session_id: string; tool: string; result: string; timestamp: Date }
+	| { type: "agent_text"; step_id: string; session_id: string; text: string; timestamp: Date }
 	| { type: "agent_response"; step_id: string; response: AgentResponse; timestamp: Date }
 	| { type: "checkpoint_waiting"; step_id: string; prompt: string; timestamp: Date }
 	| { type: "checkpoint_resolved"; step_id: string; value: unknown; timestamp: Date };

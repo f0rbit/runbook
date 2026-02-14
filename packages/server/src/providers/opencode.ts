@@ -285,6 +285,18 @@ export class OpenCodeExecutor implements AgentExecutor {
 						for (const part of msg.parts ?? []) {
 							const part_id = part.id ?? `${msg.id}_${part.type}_${part.tool}`;
 
+							if (part.type === "text" && part.content) {
+								const key = `${part_id}_text`;
+								if (seen_parts.has(key)) continue;
+								seen_parts.add(key);
+
+								handler({
+									type: "text_chunk",
+									session_id: sid,
+									chunk: part.content,
+								});
+							}
+
 							if (part.type === "tool" && part.state) {
 								const status = part.state.status;
 								if (status === "running" || status === "completed") {

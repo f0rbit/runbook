@@ -45,6 +45,15 @@ export async function handleStatus(args: string[], base_url: string): Promise<vo
 			process.exit(1);
 		}
 		console.log(formatRunStatus(result.value));
+
+		const trace_result = await client.getRunTrace(resolved_id);
+		if (trace_result.ok && trace_result.value.events.length > 0) {
+			console.log("");
+			for (const event of trace_result.value.events) {
+				const formatted = formatStepEvent(event);
+				if (formatted) console.log(formatted);
+			}
+		}
 		return;
 	}
 
@@ -61,7 +70,8 @@ export async function handleStatus(args: string[], base_url: string): Promise<vo
 		if (trace_result.ok) {
 			const events = trace_result.value.events;
 			for (let i = seen_events; i < events.length; i++) {
-				console.log(formatStepEvent(events[i]));
+				const formatted = formatStepEvent(events[i]);
+				if (formatted) console.log(formatted);
 			}
 			seen_events = events.length;
 		}

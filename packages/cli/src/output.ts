@@ -91,23 +91,13 @@ export function formatTrace(trace: Trace): string {
 	const short_id = trace.run_id.slice(0, 8);
 	const header = `${BOLD}▸ ${trace.workflow_id}${RESET} ${DIM}[run:${short_id}]${RESET}`;
 
-	const step_summaries = buildStepSummaries(trace.events);
-	const rows = step_summaries
-		.map((s) => {
-			const padded_id = s.step_id.padEnd(20);
-			const duration = formatDuration(s.duration_ms).padStart(6);
-			if (s.status === "error") {
-				const cause = s.error_cause ? `  ${RED}${s.error_cause}${RESET}` : "";
-				return `  ${RED}✗${RESET} ${padded_id} ${DIM}${duration}${RESET}${cause}`;
-			}
-			if (s.status === "skipped") {
-				return `  ${GRAY}⊘ ${padded_id}${RESET} ${DIM}skipped${RESET}`;
-			}
-			return `  ${GREEN}✓${RESET} ${padded_id} ${DIM}${duration}${RESET}`;
-		})
-		.join("\n");
+	const lines: string[] = [header];
+	for (const event of trace.events) {
+		const formatted = formatStepEvent(event);
+		if (formatted) lines.push(formatted);
+	}
 
-	return rows.length > 0 ? `${header}\n${rows}` : header;
+	return lines.join("\n");
 }
 
 type StepSummary = {
@@ -222,7 +212,7 @@ export function formatError(error: unknown): string {
 	return `${RED}Error${RESET}: ${String(error)}`;
 }
 
-export function formatStepEvent(event: TraceEvent): string {
+export function formatStepEvent(event: TraceEvent): string | null {
 	switch (event.type) {
 		case "workflow_start":
 			return `${BOLD}▸ ${event.workflow_id}${RESET} ${DIM}[run:${event.run_id.slice(0, 8)}]${RESET} starting...`;
@@ -243,18 +233,31 @@ export function formatStepEvent(event: TraceEvent): string {
 		case "checkpoint_resolved":
 			return `  ${GREEN}▶${RESET} ${event.step_id} checkpoint resolved`;
 		case "agent_session_created":
-			return `  ${DIM}session ${event.session.id.slice(0, 12)} created${RESET}`;
-		case "agent_prompt_sent":
-			return `    ${DIM}→ prompt (${event.text.length} chars)${RESET}`;
-		case "agent_tool_call": {
-			const args = event.call.args;
-			const detail = args.path ?? args.filePath ?? args.pattern ?? args.command ?? args.url ?? "";
-			const detail_str = detail ? ` ${String(detail).slice(0, 60)}` : "";
-			return `    ${DIM}⚡ ${event.call.tool}${detail_str}${RESET}`;
+			return `    ${DIM}session ${event.session.id.slice(0, 12)}${RESET}`;
+		case "agent_prompt_sent": {
+			const preview = event.text.replace(/\n/g, " ").slice(0, 120);
+			return `    ${CYAN}→${RESET} ${DIM}${preview}${event.text.length > 120 ? "..." : ""}${RESET}`;
 		}
+		case "agent_text": {
+			const text = event.text.trim();
+			if (!text) return null;
+			const max_len = 500;
+			const truncated = text.length > max_len ? text.slice(0, max_len) + "..." : text;
+			const indented = truncated
+				.split("\n")
+				.map((line) => `    ${line}`)
+				.join("\n");
+			return `    ${CYAN}▍${RESET}\n${indented}`;
+		}
+		case "agent_tool_call":
+			return null;
 		case "agent_tool_result":
-			return `    ${DIM}← ${event.tool}${RESET}`;
-		case "agent_response":
-			return `    ${DIM}agent response (${formatDuration(event.response.metadata.duration_ms)})${RESET}`;
+			return null;
+		case "agent_response": {
+			const meta = event.response.metadata;
+			const tool_count = meta.tool_calls?.length ?? 0;
+			const tool_info = tool_count > 0 ? ` (${tool_count} tool calls)` : "";
+			return `    ${DIM}completed in ${formatDuration(meta.duration_ms)}${tool_info}${RESET}`;
+		}
 	}
 }

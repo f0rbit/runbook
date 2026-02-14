@@ -56,7 +56,8 @@ export async function handleRun(args: string[], base_url: string): Promise<void>
 		if (trace_result.ok) {
 			const events = trace_result.value.events;
 			for (let i = seen_events; i < events.length; i++) {
-				console.log(formatStepEvent(events[i]));
+				const formatted = formatStepEvent(events[i]);
+				if (formatted) console.log(formatted);
 			}
 			seen_events = events.length;
 		}
@@ -72,9 +73,9 @@ export async function handleRun(args: string[], base_url: string): Promise<void>
 		}
 		const trace_result = await client.getRunTrace(result.value.run_id);
 		if (trace_result.ok && trace_result.value.events.length > seen_events) {
-			// Print any remaining events not yet seen
 			for (let i = seen_events; i < trace_result.value.events.length; i++) {
-				console.log(formatStepEvent(trace_result.value.events[i]));
+				const formatted = formatStepEvent(trace_result.value.events[i]);
+				if (formatted) console.log(formatted);
 			}
 		}
 		process.exit(1);
@@ -84,7 +85,8 @@ export async function handleRun(args: string[], base_url: string): Promise<void>
 	const trace_result = await client.getRunTrace(result.value.run_id);
 	if (trace_result.ok) {
 		for (let i = seen_events; i < trace_result.value.events.length; i++) {
-			console.log(formatStepEvent(trace_result.value.events[i]));
+			const formatted = formatStepEvent(trace_result.value.events[i]);
+			if (formatted) console.log(formatted);
 		}
 	}
 }

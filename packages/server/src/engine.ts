@@ -432,6 +432,15 @@ async function executeAgentStep(
 					timestamp: new Date(),
 				});
 				break;
+			case "text_chunk":
+				ctx.trace.emit({
+					type: "agent_text",
+					step_id: step.id,
+					session_id: event.session_id,
+					text: event.chunk,
+					timestamp: new Date(),
+				});
+				break;
 		}
 	});
 

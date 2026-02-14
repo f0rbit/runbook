@@ -539,6 +539,47 @@ describe("engine execution", () => {
 			expect(unsubscribed).toBe(true);
 		});
 
+		test("text_chunk events become agent_text trace events", async () => {
+			const agent_executor = new InMemoryAgentExecutor();
+			agent_executor.prompt_delay_ms = 50;
+			agent_executor.on(/.*/, { text: '{"result": "ok"}' });
+
+			const step = agent({
+				id: "analyze",
+				input: z.object({ task: z.string() }),
+				output: z.object({ result: z.string() }),
+				prompt: (input) => `Analyze: ${input.task}`,
+				mode: "analyze",
+			});
+
+			const workflow = defineWorkflow(z.object({ task: z.string() }))
+				.pipe(step, (wi) => wi)
+				.done("text-events-test", z.object({ result: z.string() }));
+
+			const engine = createEngine({ providers: { agent: agent_executor } });
+			const run_promise = engine.run(workflow, { task: "test" });
+
+			await Bun.sleep(10);
+			const session_id = agent_executor.created_sessions[0]?.id;
+			if (session_id) {
+				agent_executor.emitEvent(session_id, {
+					type: "text_chunk",
+					session_id,
+					chunk: "I need to analyze this by looking at the code structure first.",
+				});
+			}
+
+			const result = await run_promise;
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+
+			const text_events = result.value.trace.events.filter((e) => e.type === "agent_text");
+			expect(text_events.length).toBeGreaterThanOrEqual(1);
+			if (text_events[0]?.type === "agent_text") {
+				expect(text_events[0].text).toContain("analyze this");
+			}
+		});
+
 		test("emitted agent events appear in trace", async () => {
 			const agent_executor = new InMemoryAgentExecutor();
 			agent_executor.prompt_delay_ms = 50;
