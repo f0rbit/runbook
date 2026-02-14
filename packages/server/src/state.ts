@@ -5,10 +5,14 @@ export type RunStateStore = {
 	get: (run_id: string) => RunState | undefined;
 	update: (run_id: string, patch: Partial<RunState>) => void;
 	list: () => RunState[];
+	createController: (run_id: string) => AbortController;
+	getController: (run_id: string) => AbortController | undefined;
+	removeController: (run_id: string) => void;
 };
 
 export function createInMemoryStateStore(): RunStateStore {
 	const runs = new Map<string, RunState>();
+	const controllers = new Map<string, AbortController>();
 
 	return {
 		create(run_id, workflow_id, input) {
@@ -36,6 +40,20 @@ export function createInMemoryStateStore(): RunStateStore {
 
 		list() {
 			return Array.from(runs.values());
+		},
+
+		createController(run_id) {
+			const controller = new AbortController();
+			controllers.set(run_id, controller);
+			return controller;
+		},
+
+		getController(run_id) {
+			return controllers.get(run_id);
+		},
+
+		removeController(run_id) {
+			controllers.delete(run_id);
 		},
 	};
 }

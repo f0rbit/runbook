@@ -51,6 +51,21 @@ export function runRoutes(deps: RunDeps) {
 		});
 	});
 
+	app.post("/runs/:id/cancel", async (c) => {
+		const run_id = c.req.param("id");
+		const run = deps.state.get(run_id);
+		if (!run) return c.json({ error: "Run not found" }, 404);
+		if (run.status !== "running") return c.json({ error: "Run is not running" }, 409);
+
+		const controller = deps.state.getController(run_id);
+		if (controller) {
+			controller.abort();
+		}
+		deps.state.update(run_id, { status: "cancelled" });
+
+		return c.json({ status: "cancelled" });
+	});
+
 	app.post("/runs/:id/checkpoints/:checkpoint_id", async (c) => {
 		const run = deps.state.get(c.req.param("id"));
 		if (!run) return c.json({ error: "run_not_found" }, 404);

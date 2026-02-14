@@ -48,12 +48,14 @@ export function workflowRoutes(deps: WorkflowDeps) {
 
 function executeRunAsync(deps: WorkflowDeps, workflow: Workflow<any, any>, input: unknown, run_id: string) {
 	const trace_events: TraceEvent[] = [];
+	const controller = deps.state.createController(run_id);
 
 	deps.state.update(run_id, { status: "running" });
 
 	deps.engine
 		.run(workflow, input, {
 			run_id,
+			signal: controller.signal,
 			on_trace: (event: TraceEvent) => {
 				trace_events.push(event);
 				const run = deps.state.get(run_id);
@@ -65,14 +67,20 @@ function executeRunAsync(deps: WorkflowDeps, workflow: Workflow<any, any>, input
 			},
 		})
 		.then((result) => {
-			if (result.ok) {
+			deps.state.removeController(run_id);
+			const run = deps.state.get(run_id);
+			const already_cancelled = run?.status === "cancelled";
+
+			if (already_cancelled) {
+				deps.state.update(run_id, { completed_at: new Date() });
+			} else if (!result.ok && result.error.kind === "step_failed" && result.error.error.kind === "aborted") {
 				deps.state.update(run_id, {
-					status: "success",
-					output: result.value.output,
-					trace: result.value.trace,
+					status: "cancelled",
+					error: result.error,
+					trace: result.error.trace,
 					completed_at: new Date(),
 				});
-			} else {
+			} else if (!result.ok) {
 				deps.state.update(run_id, {
 					status: "failure",
 					error: result.error,
@@ -80,6 +88,13 @@ function executeRunAsync(deps: WorkflowDeps, workflow: Workflow<any, any>, input
 						result.error.kind === "step_failed"
 							? result.error.trace
 							: { run_id, workflow_id: workflow.id, events: trace_events, status: "failure", duration_ms: 0 },
+					completed_at: new Date(),
+				});
+			} else {
+				deps.state.update(run_id, {
+					status: "success",
+					output: result.value.output,
+					trace: result.value.trace,
 					completed_at: new Date(),
 				});
 			}
