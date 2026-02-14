@@ -415,27 +415,14 @@ async function executeAgentStep(
 			? `${prompt_text}\n\nIMPORTANT: Your final response MUST be a JSON object matching the required schema. Do not include any other text outside the JSON.`
 			: prompt_text;
 
-	const timeout_ms = agent_opts?.timeout_ms ?? 180_000;
-
-	const prompt_promise = executor.prompt(session.id, {
+	const response_result = await executor.prompt(session.id, {
 		text: final_prompt_text,
 		system_prompt,
 		model: agent_opts?.model,
 		agent_type: agent_opts?.agent_type,
-		timeout_ms,
+		timeout_ms: agent_opts?.timeout_ms,
 		signal: ctx.signal,
 	});
-
-	const timeout_promise = new Promise<null>((resolve) => {
-		const id = setTimeout(() => resolve(null), timeout_ms);
-		prompt_promise.finally(() => clearTimeout(id));
-	});
-	const response_result = await Promise.race([prompt_promise, timeout_promise]);
-
-	if (response_result === null) {
-		executor.destroySession?.(session.id).catch(() => {});
-		return err(errors.timeout(step.id, timeout_ms));
-	}
 
 	// Clean up session (fire-and-forget)
 	executor.destroySession?.(session.id).catch(() => {});

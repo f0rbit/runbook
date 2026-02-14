@@ -1,3 +1,5 @@
+declare const Bun: { sleep(ms: number): Promise<void> };
+
 import type { Result } from "@f0rbit/corpus";
 import { err, ok } from "@f0rbit/corpus";
 import type {
@@ -76,8 +78,15 @@ export class OpenCodeExecutor implements AgentExecutor {
 	async prompt(session_id: string, opts: PromptOpts): Promise<Result<AgentResponse, AgentError>> {
 		try {
 			const started = Date.now();
+			const stale_timeout_ms = opts.timeout_ms ?? 180_000;
 
-			const result = await this.client.session.prompt({
+			// Activity monitor runs in parallel — detects when the session has
+			// stalled (no time.updated change for stale_timeout_ms).
+			let monitor_active = true;
+			const monitor_promise = this.monitorActivity(session_id, stale_timeout_ms, () => monitor_active, opts.signal);
+
+			// Blocking prompt handles response collection
+			const prompt_promise = this.client.session.prompt({
 				path: { id: session_id },
 				body: {
 					parts: [{ type: "text" as const, text: opts.text }],
@@ -89,7 +98,24 @@ export class OpenCodeExecutor implements AgentExecutor {
 				},
 			});
 
-			const response = result?.data ?? result;
+			// Race: normal completion vs stale detection
+			const result = await Promise.race([
+				prompt_promise.then((r: any) => ({ type: "prompt" as const, data: r })),
+				monitor_promise.then(() => ({ type: "stale" as const, data: null })),
+			]);
+
+			monitor_active = false;
+
+			if (result.type === "stale") {
+				try {
+					await this.client.session.abort({ path: { id: session_id } });
+				} catch {
+					// Session may already be finished
+				}
+				return err({ kind: "timeout", session_id, timeout_ms: stale_timeout_ms });
+			}
+
+			const response = result.data?.data ?? result.data;
 			const parts: any[] = response?.parts ?? [];
 			const info: any = response?.info ?? {};
 
@@ -113,6 +139,42 @@ export class OpenCodeExecutor implements AgentExecutor {
 				session_id,
 				cause: e instanceof Error ? e.message : String(e),
 			});
+		}
+	}
+
+	// Polls session.get() for time.updated changes. Resolves when no activity
+	// has been observed for stale_timeout_ms, signalling the session is stalled.
+	// Returns (never resolves) if the prompt finishes first (monitor_active → false).
+	private async monitorActivity(
+		session_id: string,
+		stale_timeout_ms: number,
+		is_active: () => boolean,
+		signal?: AbortSignal,
+	): Promise<void> {
+		let last_activity = Date.now();
+
+		while (is_active()) {
+			await Bun.sleep(5000);
+
+			if (!is_active() || signal?.aborted) return;
+
+			try {
+				const session_result = await this.client.session.get({ path: { id: session_id } });
+				const session_data = session_result?.data ?? session_result;
+				const updated_at = session_data?.time?.updated;
+
+				if (updated_at) {
+					const updated_ms = typeof updated_at === "number" ? updated_at : new Date(updated_at).getTime();
+					if (updated_ms > last_activity) {
+						last_activity = updated_ms;
+					}
+				}
+			} catch {
+				// Transient fetch error — keep polling
+			}
+
+			const idle_ms = Date.now() - last_activity;
+			if (idle_ms > stale_timeout_ms) return;
 		}
 	}
 
