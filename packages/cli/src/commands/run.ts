@@ -1,5 +1,5 @@
 import { createRunbookClient } from "../client";
-import { formatError, formatRunStatus, formatTrace } from "../output";
+import { formatError, formatRunStatus, formatStepEvent } from "../output";
 
 export async function handleRun(args: string[], base_url: string): Promise<void> {
 	const workflow_id = args[0];
@@ -41,35 +41,50 @@ export async function handleRun(args: string[], base_url: string): Promise<void>
 
 	console.log(`Run started: ${result.value.run_id}`);
 
+	// Poll with live event streaming
 	let status: string = "running";
+	let seen_events = 0;
+
 	while (status === "running" || status === "pending") {
 		await Bun.sleep(500);
 		const status_result = await client.getRunStatus(result.value.run_id);
 		if (!status_result.ok) break;
 		status = status_result.value.status;
+
+		// Print new trace events as they arrive
+		const trace_result = await client.getRunTrace(result.value.run_id);
+		if (trace_result.ok) {
+			const events = trace_result.value.events;
+			for (let i = seen_events; i < events.length; i++) {
+				console.log(formatStepEvent(events[i]));
+			}
+			seen_events = events.length;
+		}
 	}
 
 	// Fetch final status
 	const final_status = await client.getRunStatus(result.value.run_id);
 
 	if (final_status.ok && final_status.value.status === "failure") {
-		// Print run summary
 		console.log(formatRunStatus(final_status.value));
-		// Print detailed error
 		if (final_status.value.error) {
 			console.error(`\n${formatError(final_status.value.error)}`);
 		}
-		// Print trace if it has step events
 		const trace_result = await client.getRunTrace(result.value.run_id);
-		if (trace_result.ok && trace_result.value.events.length > 0) {
-			console.log(`\n${formatTrace(trace_result.value)}`);
+		if (trace_result.ok && trace_result.value.events.length > seen_events) {
+			// Print any remaining events not yet seen
+			for (let i = seen_events; i < trace_result.value.events.length; i++) {
+				console.log(formatStepEvent(trace_result.value.events[i]));
+			}
 		}
 		process.exit(1);
 	}
 
-	// Success — print trace
+	// Success — print any remaining events + summary
 	const trace_result = await client.getRunTrace(result.value.run_id);
 	if (trace_result.ok) {
-		console.log(formatTrace(trace_result.value));
+		for (let i = seen_events; i < trace_result.value.events.length; i++) {
+			console.log(formatStepEvent(trace_result.value.events[i]));
+		}
 	}
 }
