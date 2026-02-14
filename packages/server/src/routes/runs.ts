@@ -31,7 +31,8 @@ export function runRoutes(deps: RunDeps) {
 			return c.json({ runs: [], source: "git" });
 		}
 
-		const limit = c.req.query("limit") ? Number.parseInt(c.req.query("limit")!, 10) : undefined;
+		const limit_param = c.req.query("limit");
+		const limit = limit_param ? Number.parseInt(limit_param, 10) : undefined;
 		const workflow_id = c.req.query("workflow_id") ?? undefined;
 
 		const result = await deps.git_store.list({ limit, workflow_id });
