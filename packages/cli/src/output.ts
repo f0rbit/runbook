@@ -131,7 +131,7 @@ function buildStepSummaries(events: TraceEvent[]): StepSummary[] {
 				step_id: event.step_id,
 				status: "error",
 				duration_ms: event.duration_ms,
-				error_cause: formatStepError(event.error),
+				error_cause: formatStepErrorBrief(event.error),
 			});
 		} else if (event.type === "step_skipped" && !seen.has(event.step_id)) {
 			seen.add(event.step_id);
@@ -156,10 +156,27 @@ function formatStepError(error: StepError): string {
 			return `exit ${error.code}: ${error.stderr.slice(0, 80)}`;
 		case "agent_error":
 			return error.cause;
-		case "agent_parse_error":
-			return `parse error: ${error.issues.map((i) => i.message).join(", ")}`;
+		case "agent_parse_error": {
+			const issues_text =
+				error.issues.length > 0
+					? error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join(", ")
+					: "no valid JSON found in response";
+			const raw_preview = error.raw_output ? `\n    response (first 200 chars): ${error.raw_output.slice(0, 200)}` : "";
+			return `parse error: ${issues_text}${raw_preview}`;
+		}
 		case "checkpoint_rejected":
 			return "checkpoint rejected";
+	}
+}
+
+function formatStepErrorBrief(error: StepError): string {
+	switch (error.kind) {
+		case "agent_parse_error":
+			return error.issues.length > 0
+				? `parse error: ${error.issues.map((i) => i.message).join(", ")}`
+				: "parse error: no valid JSON in response";
+		default:
+			return formatStepError(error).split("\n")[0];
 	}
 }
 
@@ -218,7 +235,7 @@ export function formatStepEvent(event: TraceEvent): string {
 		case "step_complete":
 			return `  ${GREEN}✓${RESET} ${event.step_id.padEnd(20)} ${DIM}${formatDuration(event.duration_ms)}${RESET}`;
 		case "step_error":
-			return `  ${RED}✗${RESET} ${event.step_id.padEnd(20)} ${DIM}${formatDuration(event.duration_ms)}${RESET}  ${RED}${formatStepError(event.error)}${RESET}`;
+			return `  ${RED}✗${RESET} ${event.step_id.padEnd(20)} ${DIM}${formatDuration(event.duration_ms)}${RESET}  ${RED}${formatStepErrorBrief(event.error)}${RESET}`;
 		case "step_skipped":
 			return `  ${GRAY}⊘ ${event.step_id}${RESET} ${DIM}skipped: ${event.reason}${RESET}`;
 		case "checkpoint_waiting":
