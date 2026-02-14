@@ -456,7 +456,7 @@ async function executeAgentStep(
 
 	const final_prompt_text =
 		mode === "analyze"
-			? `${prompt_text}\n\nIMPORTANT: Your final response MUST be a JSON object matching the required schema. Do not include any other text outside the JSON.`
+			? `${prompt_text}\n\n---\n\nCRITICAL: After completing your analysis, your FINAL message must contain ONLY a valid JSON object matching the required output schema. No markdown formatting, no explanation before or after — just the raw JSON object. Start your response with \`{\` and end with \`}\`.`
 			: prompt_text;
 
 	ctx.trace.emit({
@@ -512,7 +512,20 @@ async function executeAgentStep(
 
 function formatOutputSchemaPrompt(schema: z.ZodType): string {
 	const json_schema = JSON.stringify(zodToJsonSchema(schema), null, 2);
-	return `You MUST respond with a JSON object matching this schema:\n\`\`\`json\n${json_schema}\n\`\`\`\nRespond with ONLY the JSON object, no other text.`;
+	return [
+		"## Required Output Format",
+		"",
+		"Your final response must be a single JSON object matching this schema:",
+		"```json",
+		json_schema,
+		"```",
+		"",
+		"Rules:",
+		"- Respond with ONLY the JSON object in your final message",
+		"- Do NOT wrap it in markdown code fences",
+		"- Do NOT include any text before or after the JSON",
+		"- Start your response with `{` and end with `}`",
+	].join("\n");
 }
 
 function extractJson(text: string): Result<unknown, string> {
