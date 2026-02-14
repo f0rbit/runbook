@@ -41,9 +41,10 @@ export async function handleRun(args: string[], base_url: string): Promise<void>
 
 	console.log(`Run started: ${result.value.run_id}`);
 
-	// Poll with live event streaming
+	// Poll with live event streaming + checkpoint handling
 	let status: string = "running";
 	let seen_events = 0;
+	const resolved_checkpoints = new Set<string>();
 
 	while (status === "running" || status === "pending") {
 		await Bun.sleep(500);
@@ -60,6 +61,48 @@ export async function handleRun(args: string[], base_url: string): Promise<void>
 				if (formatted) console.log(formatted);
 			}
 			seen_events = events.length;
+		}
+
+		// Check for pending checkpoints
+		const pending = status_result.value.pending_checkpoints ?? [];
+		for (const checkpoint_id of pending) {
+			if (resolved_checkpoints.has(checkpoint_id)) continue;
+			resolved_checkpoints.add(checkpoint_id);
+
+			// Find the checkpoint_waiting event to get the prompt
+			let checkpoint_prompt = "Checkpoint requires approval.";
+			if (trace_result?.ok) {
+				const waiting_event = trace_result.value.events.find((e) => e.type === "checkpoint_waiting");
+				if (waiting_event && waiting_event.type === "checkpoint_waiting") {
+					checkpoint_prompt = waiting_event.prompt;
+				}
+			}
+
+			// Display checkpoint prompt and ask for input
+			console.log("");
+			console.log("\x1b[33m━━━ Checkpoint ━━━\x1b[0m");
+			console.log(checkpoint_prompt);
+			console.log("");
+
+			const approved = await promptUser("Approve? [y/n]: ");
+			const is_approved = approved.toLowerCase().startsWith("y");
+
+			let notes: string | undefined;
+			if (!is_approved) {
+				notes = await promptUser("Rejection notes (optional): ");
+			}
+
+			const resolve_result = await client.resolveCheckpoint(result.value.run_id, checkpoint_id, {
+				approved: is_approved,
+				notes: notes || undefined,
+			});
+			if (!resolve_result.ok) {
+				console.error("Failed to resolve checkpoint:", formatError(resolve_result.error));
+			} else {
+				console.log(is_approved ? "\x1b[32m✓ Approved\x1b[0m" : "\x1b[31m✗ Rejected\x1b[0m");
+			}
+			console.log("\x1b[33m━━━━━━━━━━━━━━━━━━\x1b[0m");
+			console.log("");
 		}
 	}
 
@@ -89,4 +132,21 @@ export async function handleRun(args: string[], base_url: string): Promise<void>
 			if (formatted) console.log(formatted);
 		}
 	}
+}
+
+async function promptUser(question: string): Promise<string> {
+	process.stdout.write(question);
+	return new Promise<string>((resolve) => {
+		let data = "";
+		const onData = (chunk: Buffer) => {
+			data += chunk.toString();
+			if (data.includes("\n")) {
+				process.stdin.removeListener("data", onData);
+				process.stdin.pause();
+				resolve(data.trim());
+			}
+		};
+		process.stdin.resume();
+		process.stdin.on("data", onData);
+	});
 }

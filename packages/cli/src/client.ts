@@ -18,6 +18,7 @@ export type RunInfo = {
 	error?: unknown;
 	started_at: string;
 	completed_at?: string;
+	pending_checkpoints?: string[];
 };
 
 export type RunbookClient = {
