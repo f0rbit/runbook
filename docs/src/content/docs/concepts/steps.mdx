@@ -261,3 +261,12 @@ const workflow = defineWorkflow(z.object({ plan: z.string() }))
 ```
 
 The checkpoint output replaces the previous step output in the pipeline. If you need to carry data forward across a checkpoint boundary, use a module-level closure or a `fn()` step to capture it.
+
+---
+
+## Related
+
+- [Workflows](/runbook/concepts/workflows/) — compose steps into typed pipelines with `pipe()` and `parallel()`
+- [Providers](/runbook/concepts/providers/) — the provider interfaces that steps dispatch to
+- [Testing Guide](/runbook/guides/testing/) — test workflows with in-memory providers
+- [Agent Steps Guide](/runbook/guides/agent-steps/) — deep dive into agent step configuration

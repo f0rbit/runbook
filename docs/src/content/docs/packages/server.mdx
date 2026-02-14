@@ -239,3 +239,12 @@ Interface for run state persistence:
 | `get` | `(run_id: string) => Promise<RunState \| undefined>` |
 | `set` | `(run_id: string, state: RunState) => Promise<void>` |
 | `list` | `() => Promise<RunState[]>` |
+
+---
+
+## Related
+
+- [Providers](/runbook/concepts/providers/) — provider interfaces implemented in this package
+- [Architecture](/runbook/resources/architecture/) — system architecture and engine dispatch flow
+- [`@f0rbit/runbook`](/runbook/packages/core/) — core SDK with step builders and types
+- [`@f0rbit/runbook-cli`](/runbook/packages/cli/) — CLI that connects to this server

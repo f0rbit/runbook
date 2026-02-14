@@ -271,3 +271,12 @@ const workflow = defineWorkflow(z.object({ spec: z.string() }))
 ```
 
 The `pipe()` mapper receives `(workflow_input, previous_step_output)` — both fully typed from their respective Zod schemas.
+
+---
+
+## Related
+
+- [Steps](/runbook/concepts/steps/) — reference for all four step types including `agent()`
+- [Providers](/runbook/concepts/providers/) — `AgentExecutor` interface details
+- [Testing Guide](/runbook/guides/testing/) — testing agent steps with `InMemoryAgentExecutor`
+- [`@f0rbit/runbook`](/runbook/packages/core/) — full API reference for agent types

@@ -292,3 +292,12 @@ const result = await engine.run(workflow, input);
 ```
 
 No mocking — the Provider pattern replaces all external dependencies with real implementations that happen to run in-memory.
+
+---
+
+## Related
+
+- [Steps](/runbook/concepts/steps/) — the step types that dispatch to providers
+- [Testing Guide](/runbook/guides/testing/) — using in-memory providers for deterministic tests
+- [`@f0rbit/runbook-server`](/runbook/packages/server/) — server package where production providers live
+- [`@f0rbit/runbook/test`](/runbook/packages/core/#test-providers) — test provider exports

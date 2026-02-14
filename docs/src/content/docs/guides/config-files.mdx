@@ -90,7 +90,7 @@ The `resolveProviders(config)` function in the server package creates real provi
 }
 ```
 
-When enabled, every workflow run is automatically stored as git objects under `refs/runbook/runs/`. See the [Git Artifact Store](/guides/git-artifact-store) guide.
+When enabled, every workflow run is automatically stored as git objects under `refs/runbook/runs/`. See the [Git Artifact Store](/runbook/guides/git-artifact-store/) guide.
 
 ### working_directory
 
@@ -226,3 +226,12 @@ export default defineConfig({
   },
 });
 ```
+
+---
+
+## Related
+
+- [Configuration](/runbook/concepts/configuration/) — conceptual overview of config format
+- [Providers](/runbook/concepts/providers/) — provider types configured via `providers` field
+- [`@f0rbit/runbook-cli`](/runbook/packages/cli/) — CLI config discovery and `--config` flag
+- [Agent Steps Guide](/runbook/guides/agent-steps/) — `system_prompt_file` referenced from config
