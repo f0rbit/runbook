@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { err, ok } from "@f0rbit/corpus";
 import type { TraceEvent } from "@f0rbit/runbook";
 import { agent, checkpoint, defineWorkflow, fn, shell } from "@f0rbit/runbook";
@@ -295,7 +295,7 @@ describe("engine execution", () => {
 			id: "slow_step",
 			input: z.number(),
 			output: z.number(),
-			run: async (n, ctx) => {
+			run: async (n, _ctx) => {
 				await new Promise((resolve) => setTimeout(resolve, 100));
 				return ok(n);
 			},
@@ -327,5 +327,150 @@ describe("engine execution", () => {
 		expect(result.error.kind).toBe("step_failed");
 		if (result.error.kind !== "step_failed") return;
 		expect(result.error.error.kind).toBe("aborted");
+	});
+
+	describe("cancellation", () => {
+		test("cancel during shell step", async () => {
+			const shell_provider = new InMemoryShellProvider();
+			shell_provider.exec_delay_ms = 100;
+			shell_provider.on(/echo/, { stdout: "hello" });
+
+			const echo_step = shell({
+				id: "echo_step",
+				input: z.string(),
+				output: z.string(),
+				command: (s) => `echo ${s}`,
+				parse: (stdout, code) => {
+					if (code !== 0) return err({ kind: "shell_error", step_id: "echo_step", command: "echo", code, stderr: "" });
+					return ok(stdout.trim());
+				},
+			});
+
+			const workflow = defineWorkflow(z.string())
+				.pipe(echo_step, (wi) => wi)
+				.done("cancel-shell-test", z.string());
+
+			const controller = new AbortController();
+			const engine = createEngine({ providers: { shell: shell_provider } });
+
+			setTimeout(() => controller.abort(), 20);
+
+			const result = await engine.run(workflow, "hi", { signal: controller.signal });
+
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.error.kind).toBe("step_failed");
+			if (result.error.kind !== "step_failed") return;
+			expect(["shell_error", "aborted"]).toContain(result.error.error.kind);
+		});
+
+		test("cancel during agent step", async () => {
+			const agent_executor = new InMemoryAgentExecutor();
+			agent_executor.prompt_delay_ms = 100;
+			agent_executor.on(/analyze/, {
+				text: JSON.stringify({ result: "done" }),
+			});
+
+			const analyze_step = agent({
+				id: "analyze_step",
+				input: z.string(),
+				output: z.object({ result: z.string() }),
+				prompt: (s) => `analyze ${s}`,
+				mode: "analyze",
+			});
+
+			const workflow = defineWorkflow(z.string())
+				.pipe(analyze_step, (wi) => wi)
+				.done("cancel-agent-test", z.object({ result: z.string() }));
+
+			const controller = new AbortController();
+			const engine = createEngine({ providers: { agent: agent_executor } });
+
+			setTimeout(() => controller.abort(), 20);
+
+			const result = await engine.run(workflow, "code", { signal: controller.signal });
+
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.error.kind).toBe("step_failed");
+			if (result.error.kind !== "step_failed") return;
+			expect(agent_executor.destroyed_sessions.length).toBeGreaterThanOrEqual(1);
+		});
+
+		test("destroySession called on normal agent completion", async () => {
+			const agent_executor = new InMemoryAgentExecutor();
+			agent_executor.on(/analyze/, {
+				text: JSON.stringify({ result: "done" }),
+			});
+
+			const analyze_step = agent({
+				id: "analyze_normal",
+				input: z.string(),
+				output: z.object({ result: z.string() }),
+				prompt: (s) => `analyze ${s}`,
+				mode: "analyze",
+			});
+
+			const workflow = defineWorkflow(z.string())
+				.pipe(analyze_step, (wi) => wi)
+				.done("normal-agent-test", z.object({ result: z.string() }));
+
+			const engine = createEngine({ providers: { agent: agent_executor } });
+			const result = await engine.run(workflow, "code");
+
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+
+			// Wait for fire-and-forget destroySession to complete
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			expect(agent_executor.destroyed_sessions).toHaveLength(1);
+		});
+
+		test("cancel propagates to parallel branches", async () => {
+			const shell_provider = new InMemoryShellProvider();
+			shell_provider.exec_delay_ms = 100;
+			shell_provider.on(/branch_a/, { stdout: "a" });
+			shell_provider.on(/branch_b/, { stdout: "b" });
+
+			const branch_a = shell({
+				id: "branch_a",
+				input: z.string(),
+				output: z.string(),
+				command: (s) => `branch_a ${s}`,
+				parse: (stdout, code) => {
+					if (code !== 0)
+						return err({ kind: "shell_error", step_id: "branch_a", command: "branch_a", code, stderr: "" });
+					return ok(stdout.trim());
+				},
+			});
+
+			const branch_b = shell({
+				id: "branch_b",
+				input: z.string(),
+				output: z.string(),
+				command: (s) => `branch_b ${s}`,
+				parse: (stdout, code) => {
+					if (code !== 0)
+						return err({ kind: "shell_error", step_id: "branch_b", command: "branch_b", code, stderr: "" });
+					return ok(stdout.trim());
+				},
+			});
+
+			const workflow = defineWorkflow(z.string())
+				.parallel([branch_a, (wi) => wi] as const, [branch_b, (wi) => wi] as const)
+				.done("cancel-parallel-test", z.tuple([z.string(), z.string()]));
+
+			const controller = new AbortController();
+			const engine = createEngine({ providers: { shell: shell_provider } });
+
+			setTimeout(() => controller.abort(), 20);
+
+			const result = await engine.run(workflow, "go", { signal: controller.signal });
+
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.error.kind).toBe("step_failed");
+		});
 	});
 });

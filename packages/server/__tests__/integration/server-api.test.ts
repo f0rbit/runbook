@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ok } from "@f0rbit/corpus";
-import { defineWorkflow, fn } from "@f0rbit/runbook";
+import { defineWorkflow, fn, shell, type Workflow } from "@f0rbit/runbook";
+import { InMemoryShellProvider } from "@f0rbit/runbook/test";
 import { z } from "zod";
 import { createEngine } from "../../src/engine";
 import { createServer } from "../../src/server";
@@ -166,5 +167,91 @@ describe("GET /runs", () => {
 		// Most recent should be first
 		const ids = body.runs.map((r: any) => r.run_id);
 		expect(ids.indexOf(id2)).toBeLessThan(ids.indexOf(id1));
+	});
+});
+
+const SlowInputSchema = z.object({ value: z.string() });
+const SlowOutputSchema = z.object({ stdout: z.string() });
+
+const slow_step = shell({
+	id: "slow-shell",
+	input: SlowInputSchema,
+	output: SlowOutputSchema,
+	command: (input) => `echo ${input.value}`,
+	parse: (stdout, _code) => ok({ stdout }),
+});
+
+const slow_workflow = defineWorkflow(SlowInputSchema)
+	.pipe(slow_step, (input) => input)
+	.done("slow-workflow", SlowOutputSchema);
+
+function setupWithSlowWorkflow() {
+	const shell_provider = new InMemoryShellProvider();
+	shell_provider.exec_delay_ms = 5000;
+	shell_provider.on(/.*/, { stdout: "done" });
+
+	const engine = createEngine({ providers: { shell: shell_provider } });
+	const state = createInMemoryStateStore();
+	const workflows = new Map<string, Workflow<any, any>>([
+		[echo_workflow.id, echo_workflow],
+		[slow_workflow.id, slow_workflow],
+	]);
+	const app = createServer({ engine, state, workflows });
+	return { app, state };
+}
+
+describe("cancel", () => {
+	test("POST /runs/:id/cancel on unknown run returns 404", async () => {
+		const { app } = setup();
+		const res = await app.request("/runs/nonexistent/cancel", { method: "POST" });
+		expect(res.status).toBe(404);
+	});
+
+	test("POST /runs/:id/cancel on completed run returns 409", async () => {
+		const { app } = setup();
+
+		const submit = await app.request("/workflows/echo-workflow/run", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ input: { message: "done" } }),
+		});
+		const { run_id } = await submit.json();
+
+		// Poll until completed
+		for (let i = 0; i < 20; i++) {
+			await Bun.sleep(50);
+			const poll = await app.request(`/runs/${run_id}`);
+			const body = await poll.json();
+			if (body.status === "success") break;
+		}
+
+		const res = await app.request(`/runs/${run_id}/cancel`, { method: "POST" });
+		expect(res.status).toBe(409);
+	});
+
+	test("POST /runs/:id/cancel on running run returns cancelled status", async () => {
+		const { app } = setupWithSlowWorkflow();
+
+		const submit = await app.request("/workflows/slow-workflow/run", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ input: { value: "hello" } }),
+		});
+		const { run_id } = await submit.json();
+
+		// Wait for run to start executing
+		await Bun.sleep(50);
+
+		const res = await app.request(`/runs/${run_id}/cancel`, { method: "POST" });
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.status).toBe("cancelled");
+
+		// Verify GET /runs/:id shows cancelled status
+		await Bun.sleep(100);
+		const get_res = await app.request(`/runs/${run_id}`);
+		expect(get_res.status).toBe(200);
+		const get_body = await get_res.json();
+		expect(get_body.status).toBe("cancelled");
 	});
 });
