@@ -1,4 +1,4 @@
-import type { TraceEvent, Workflow } from "@f0rbit/runbook";
+import type { RunSnapshot, RunState, TraceEvent, Workflow } from "@f0rbit/runbook";
 import type { GitArtifactStore, StorableRun } from "@f0rbit/runbook-git-store";
 import { Hono } from "hono";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -46,10 +46,65 @@ export function workflowRoutes(deps: WorkflowDeps) {
 		return c.json({ run_id }, 202);
 	});
 
+	app.post("/workflows/:id/resume/:run_id", async (c) => {
+		const workflow = deps.workflows.get(c.req.param("id"));
+		if (!workflow) {
+			return c.json({ error: "workflow_not_found" }, 404);
+		}
+
+		const run_id = c.req.param("run_id");
+		const existing_run = deps.state.get(run_id);
+		if (!existing_run) {
+			return c.json({ error: "run_not_found" }, 404);
+		}
+
+		const snapshot = buildSnapshot(existing_run);
+		if (!snapshot) {
+			return c.json({ error: "no_checkpoint_found", message: "Run has no checkpoint to resume from" }, 409);
+		}
+
+		const new_run_id = crypto.randomUUID();
+		deps.state.create(new_run_id, workflow.id, existing_run.input);
+
+		executeRunAsync(deps, workflow, existing_run.input, new_run_id, snapshot);
+
+		return c.json({ run_id: new_run_id, resumed_from: run_id }, 202);
+	});
+
 	return app;
 }
 
-function executeRunAsync(deps: WorkflowDeps, workflow: Workflow<any, any>, input: unknown, run_id: string) {
+function buildSnapshot(run: RunState): RunSnapshot | null {
+	const checkpoint_event = run.trace.events
+		.filter((e): e is Extract<TraceEvent, { type: "checkpoint_waiting" }> => e.type === "checkpoint_waiting")
+		.at(-1);
+	if (!checkpoint_event) return null;
+
+	const completed = new Map<string, unknown>();
+	for (const event of run.trace.events) {
+		if (event.type === "step_complete") {
+			completed.set(event.step_id, event.output);
+		}
+	}
+
+	return {
+		run_id: run.run_id,
+		workflow_id: run.workflow_id,
+		input: run.input,
+		completed_steps: completed,
+		resume_at: checkpoint_event.step_id,
+		checkpoint_prompt: checkpoint_event.prompt,
+		trace_events: run.trace.events,
+	};
+}
+
+function executeRunAsync(
+	deps: WorkflowDeps,
+	workflow: Workflow<any, any>,
+	input: unknown,
+	run_id: string,
+	snapshot?: RunSnapshot,
+) {
 	const trace_events: TraceEvent[] = [];
 	const controller = deps.state.createController(run_id);
 
@@ -69,6 +124,7 @@ function executeRunAsync(deps: WorkflowDeps, workflow: Workflow<any, any>, input
 			run_id,
 			signal: controller.signal,
 			checkpoint,
+			snapshot,
 			on_trace: (event: TraceEvent) => {
 				trace_events.push(event);
 				const run = deps.state.get(run_id);
@@ -76,6 +132,23 @@ function executeRunAsync(deps: WorkflowDeps, workflow: Workflow<any, any>, input
 					deps.state.update(run_id, {
 						trace: { ...run.trace, events: [...trace_events] },
 					});
+				}
+
+				if (event.type === "checkpoint_waiting" && deps.git_store) {
+					const current_run = deps.state.get(run_id);
+					if (current_run) {
+						const storable: StorableRun = {
+							run_id,
+							workflow_id: workflow.id,
+							input,
+							output: undefined,
+							trace: current_run.trace,
+							duration_ms: current_run.trace.duration_ms,
+						};
+						deps.git_store.store(storable).then((r) => {
+							if (!r.ok) console.error(`[runbook] git-store checkpoint write failed for ${run_id}:`, r.error);
+						});
+					}
 				}
 			},
 		})

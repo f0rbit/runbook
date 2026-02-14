@@ -6,6 +6,7 @@ import { handleHistory } from "./commands/history";
 import { handleList } from "./commands/list";
 import { handlePull } from "./commands/pull";
 import { handlePush } from "./commands/push";
+import { handleResume } from "./commands/resume";
 import { handleRun } from "./commands/run";
 import { handleServe } from "./commands/serve";
 import { handleShow } from "./commands/show";
@@ -34,6 +35,7 @@ Commands:
   diff <run-id-1> <run-id-2>   Diff two stored runs
   push [--remote origin]       Push artifact refs to remote
   cancel [run-id]              Cancel a running workflow
+  resume <run-id>              Resume a checkpoint-paused run
   pull [--remote origin]       Pull artifact refs from remote
 
 Options:
@@ -76,6 +78,9 @@ switch (cmd) {
 		break;
 	case "cancel":
 		await handleCancel(rest, getBaseUrl(args));
+		break;
+	case "resume":
+		await handleResume(rest, getBaseUrl(args));
 		break;
 	case "pull":
 		await handlePull(rest);

@@ -29,6 +29,10 @@ export type RunbookClient = {
 	getRunTrace: (run_id: string) => Promise<Result<Trace, ClientError>>;
 	resolveCheckpoint: (run_id: string, checkpoint_id: string, value: unknown) => Promise<Result<void, ClientError>>;
 	cancelRun: (run_id: string) => Promise<Result<{ status: string }, ClientError>>;
+	resumeRun: (
+		workflow_id: string,
+		run_id: string,
+	) => Promise<Result<{ run_id: string; resumed_from: string }, ClientError>>;
 };
 
 export function createRunbookClient(base_url: string): RunbookClient {
@@ -92,6 +96,12 @@ export function createRunbookClient(base_url: string): RunbookClient {
 
 		async cancelRun(run_id) {
 			return request<{ status: string }>(`/runs/${run_id}/cancel`, {
+				method: "POST",
+			});
+		},
+
+		async resumeRun(workflow_id, run_id) {
+			return request<{ run_id: string; resumed_from: string }>(`/workflows/${workflow_id}/resume/${run_id}`, {
 				method: "POST",
 			});
 		},
