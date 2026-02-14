@@ -1,0 +1,43 @@
+# @f0rbit/runbook
+
+> Typed workflow engine for orchestrating AI agents, shell commands, and human checkpoints with compile-time safety.
+
+## Installation
+
+bun add @f0rbit/runbook @f0rbit/runbook-server zod @f0rbit/corpus
+
+## Core Concepts
+
+- **4 step types**: fn() (pure functions), shell() (shell commands), agent() (AI agents), checkpoint() (human approval)
+- **Typed pipelines**: defineWorkflow() → .pipe() → .parallel() → .done() with compile-time type checking via Zod schemas
+- **Provider pattern**: ShellProvider, AgentExecutor, CheckpointProvider — swappable implementations for production and testing
+- **Structured traces**: 14 typed event types covering workflow lifecycle, step execution, agent sessions, and checkpoints
+
+## Packages
+
+| Package | npm | Description |
+|---------|-----|-------------|
+| core | @f0rbit/runbook | SDK: types, step builders, workflow builder, trace types |
+| server | @f0rbit/runbook-server | Hono HTTP server: engine, providers, routes, state |
+| cli | @f0rbit/runbook-cli | Thin CLI client: HTTP client, command handlers, config |
+| git-store | @f0rbit/runbook-git-store | Git-based artifact store for workflow traces |
+
+## CLI Commands
+
+serve                        Start the runbook server
+run <workflow> [task...] [--input json] Submit a workflow run
+status [run-id] [--live]     Get run status (--live to stream events)
+trace <run-id>               Display run trace
+list                         List available workflows
+history                      List stored runs from git
+show <run-id> [step-id]      Show run or step artifacts
+diff <run-id-1> <run-id-2>   Diff two stored runs
+push [--remote origin]       Push artifact refs to remote
+cancel [run-id]              Cancel a running workflow
+pull [--remote origin]       Pull artifact refs from remote
+
+## Links
+
+- Full documentation: https://f0rbit.github.io/runbook/
+- Comprehensive LLM docs: https://f0rbit.github.io/runbook/llms-full.txt
+- GitHub: https://github.com/f0rbit/runbook

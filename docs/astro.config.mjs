@@ -68,7 +68,10 @@ export default defineConfig({
 				},
 				{
 					label: "Resources",
-					items: [{ label: "Architecture", slug: "resources/architecture" }],
+					items: [
+						{ label: "Architecture", slug: "resources/architecture" },
+						{ label: "LLM Docs", slug: "resources/llms" },
+					],
 				},
 			],
 		}),

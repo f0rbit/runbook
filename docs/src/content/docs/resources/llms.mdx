@@ -1,0 +1,69 @@
+---
+title: "LLM Docs"
+description: "Machine-readable documentation for AI assistants and LLM-powered tools."
+---
+
+# LLM-Friendly Documentation
+
+@f0rbit/runbook provides machine-readable documentation files optimized for consumption by AI assistants, LLM-powered coding tools, and automated documentation pipelines.
+
+## Available Files
+
+| File | Size | Contents |
+|------|------|----------|
+| [`llms.txt`](/runbook/llms.txt) | ~2 KB | Concise project overview — installation, core concepts, packages, CLI commands |
+| [`llms-full.txt`](/runbook/llms-full.txt) | ~80 KB | Comprehensive reference — full README, use cases, API exports, all documentation pages |
+
+## Usage
+
+### With AI Coding Assistants
+
+Point your AI assistant to the appropriate file based on your needs:
+
+**Quick context** — use `llms.txt` when you need the assistant to understand what runbook is and how to use it:
+
+```
+Read https://f0rbit.github.io/runbook/llms.txt for project context
+```
+
+**Full reference** — use `llms-full.txt` when you need comprehensive API details, configuration options, or in-depth guides:
+
+```
+Read https://f0rbit.github.io/runbook/llms-full.txt for full documentation
+```
+
+### In Tool Configuration
+
+Many AI-powered tools support documentation URLs for project context:
+
+```json
+{
+  "docs": "https://f0rbit.github.io/runbook/llms-full.txt"
+}
+```
+
+### What's Included
+
+**`llms.txt` contains:**
+- Project description and installation
+- Core concepts (step types, workflows, providers, traces)
+- Package overview (4 packages with descriptions)
+- CLI command reference (11 commands)
+- Links to full docs and GitHub
+
+**`llms-full.txt` contains:**
+- Complete README with code examples
+- Full use case document with comparisons
+- Per-package API exports from source
+- CLI command reference with all options
+- All documentation pages (stripped of formatting metadata)
+- Configuration reference
+
+## Generation
+
+These files are generated automatically during the docs build process from:
+- Repository README and USECASE documents
+- Package export files (`packages/*/src/index.ts`)
+- All documentation pages (`docs/src/content/docs/**/*.mdx`)
+
+The generation script runs before each Astro build, ensuring the LLM docs stay in sync with the documentation site.

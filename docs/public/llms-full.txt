@@ -1,0 +1,4826 @@
+# @f0rbit/runbook — Full Documentation for LLMs
+
+> Typed workflow engine for orchestrating AI agents, shell commands, and human checkpoints with compile-time safety.
+
+---
+
+# README
+
+# @f0rbit/runbook
+
+Typed workflow engine for orchestrating AI agents, shell commands, and human checkpoints with compile-time safety.
+
+## What is this?
+
+Runbook lets you define workflows as pipelines of typed steps. Each step has Zod input/output schemas -- mis-wired pipelines fail at compile time, not runtime. Steps can be pure functions, shell commands, AI agent sessions, or human checkpoints.
+
+## Quick Start
+
+```bash
+bun add @f0rbit/runbook @f0rbit/runbook-server zod @f0rbit/corpus
+```
+
+```typescript
+import { agent, defineWorkflow } from "@f0rbit/runbook";
+import { createEngine } from "@f0rbit/runbook-server";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const IssueSchema = z.object({
+  issues: z.array(z.string()),
+  severity: z.enum(["low", "medium", "high"]),
+});
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: IssueSchema,
+  prompt: (input) => `Analyze this code for issues:\n${input.code}`,
+});
+
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .pipe(analyze, (wf_input) => ({ code: wf_input.code }))
+  .done("code-review", IssueSchema);
+
+// Run it
+const engine = createEngine({ providers: { agent: myAgentExecutor } });
+const result = await engine.run(workflow, { code: "console.log('hello')" });
+
+if (result.ok) {
+  console.log(result.value.output); // { issues: [...], severity: "low" }
+}
+```
+
+## Packages
+
+| Package | npm | Description |
+|---------|-----|-------------|
+| `packages/core` | `@f0rbit/runbook` | SDK: types, step builders, workflow builder, trace types |
+| `packages/server` | `@f0rbit/runbook-server` | Hono HTTP server: engine, providers, routes, state |
+| `packages/cli` | `@f0rbit/runbook-cli` | Thin CLI client: HTTP client, command handlers, config |
+| `packages/git-store` | `@f0rbit/runbook-git-store` | Git-based artifact store for workflow traces |
+
+## Step Types
+
+### `fn()` -- Pure function
+
+```typescript
+import { fn } from "@f0rbit/runbook";
+import { ok } from "@f0rbit/corpus";
+
+const transform = fn({
+  id: "transform",
+  input: z.object({ text: z.string() }),
+  output: z.object({ words: z.number() }),
+  run: async (input) => ok({ words: input.text.split(" ").length }),
+});
+```
+
+### `shell()` -- Shell command
+
+```typescript
+import { shell } from "@f0rbit/runbook";
+import { ok } from "@f0rbit/corpus";
+
+const lint = shell({
+  id: "lint",
+  input: z.object({ path: z.string() }),
+  output: z.object({ clean: z.boolean(), output: z.string() }),
+  command: (input) => `eslint ${input.path} --format json`,
+  parse: (stdout, code) => ok({ clean: code === 0, output: stdout }),
+});
+```
+
+### `agent()` -- AI agent
+
+Two output modes:
+- `"analyze"` (default) -- agent returns JSON matching the output schema
+- `"build"` -- output is extracted from the agent session metadata (files changed, tool calls, etc.)
+
+```typescript
+import { agent } from "@f0rbit/runbook";
+
+const review = agent({
+  id: "review",
+  input: z.object({ diff: z.string() }),
+  output: z.object({ approved: z.boolean(), comments: z.array(z.string()) }),
+  prompt: (input) => `Review this diff:\n${input.diff}`,
+  mode: "analyze",
+});
+```
+
+### `checkpoint()` -- Human approval
+
+Pauses the workflow and waits for human input. The server exposes a POST endpoint; the CLI prompts stdin.
+
+```typescript
+import { checkpoint } from "@f0rbit/runbook";
+
+const approve = checkpoint({
+  id: "approve",
+  input: z.object({ summary: z.string() }),
+  output: z.object({ approved: z.boolean() }),
+  prompt: (input) => `Review and approve:\n${input.summary}`,
+});
+```
+
+## Workflow Composition
+
+### `pipe()` -- Sequential steps
+
+The mapper receives `(workflow_input, previous_step_output)`, both fully typed.
+
+```typescript
+const workflow = defineWorkflow(z.object({ url: z.string() }))
+  .pipe(fetch_step, (wf_input) => ({ url: wf_input.url }))
+  .pipe(parse_step, (_wf_input, prev) => ({ html: prev.body }))
+  .pipe(summarize_step, (_wf_input, prev) => ({ text: prev.content }))
+  .done("scrape-pipeline", SummarySchema);
+```
+
+### `parallel()` -- Fan-out/fan-in
+
+Returns a tuple type of all parallel step outputs.
+
+```typescript
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .parallel(
+    [lint_step, (wf) => ({ path: wf.code })],
+    [test_step, (wf) => ({ path: wf.code })],
+    [typecheck_step, (wf) => ({ path: wf.code })],
+  )
+  .pipe(merge_step, (_wf, [lint, test, types]) => ({
+    lint_ok: lint.clean,
+    tests_pass: test.passed,
+    types_ok: types.clean,
+  }))
+  .done("ci-pipeline", MergedResultSchema);
+```
+
+### `asStep()` -- Sub-workflows
+
+Wrap a workflow as a step for composition.
+
+```typescript
+const inner = defineWorkflow(z.object({ file: z.string() }))
+  .pipe(read_step, (wf) => ({ path: wf.file }))
+  .pipe(process_step, (_wf, prev) => ({ content: prev.text }))
+  .done("inner-wf", OutputSchema);
+
+const outer = defineWorkflow(z.object({ files: z.array(z.string()) }))
+  .pipe(inner.asStep(), (wf) => ({ file: wf.files[0] }))
+  .done("outer-wf", OutputSchema);
+```
+
+## Testing
+
+Use in-memory providers from `@f0rbit/runbook/test` -- no mocking, no real I/O.
+
+```typescript
+import { describe, expect, test } from "bun:test";
+import { InMemoryAgentExecutor, InMemoryShellProvider } from "@f0rbit/runbook/test";
+import { createEngine } from "@f0rbit/runbook-server";
+
+describe("my workflow", () => {
+  test("runs end to end", async () => {
+    const shell = new InMemoryShellProvider();
+    shell.on(/eslint/, { stdout: "[]", exit_code: 0 });
+
+    const agent = new InMemoryAgentExecutor();
+    agent.on(/Analyze/, { text: '{"issues": [], "severity": "low"}' });
+
+    const engine = createEngine({ providers: { shell, agent } });
+    const result = await engine.run(workflow, { code: "const x = 1;" });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.output.severity).toBe("low");
+    }
+  });
+});
+```
+
+## CLI
+
+```
+Usage: runbook <command> [options]
+
+Commands:
+  serve                        Start the runbook server
+  run <workflow> [--input json] Submit a workflow run
+  status <run-id>              Get run status
+  trace <run-id>               Display run trace
+  list                         List available workflows
+  history                      List stored runs from git
+  show <run-id> [step-id]      Show run or step artifacts
+  diff <run-id-1> <run-id-2>   Diff two stored runs
+  push [--remote origin]       Push artifact refs to remote
+  pull [--remote origin]       Pull artifact refs from remote
+
+Options:
+  --url <url>                  Server URL (default: http://localhost:4400)
+  --config <path>              Config file path
+```
+
+```bash
+# Start the server
+runbook serve
+
+# Run a workflow
+runbook run code-review --input '{"code": "console.log(1)"}'
+
+# Inspect results
+runbook trace <run-id>
+runbook show <run-id> analyze
+```
+
+## Git Artifact Store
+
+Workflow traces are stored as git objects under `refs/runbook/runs/<run-id>`. These refs are invisible to `git log` -- they live outside the normal commit graph.
+
+Each run stores:
+- `metadata.json` -- workflow ID, input, output, timing, optional commit SHA
+- `trace.json` -- full typed event stream
+- `steps/<step-id>/` -- per-step input, output, prompt, and response artifacts
+
+```bash
+# List stored runs
+runbook history
+
+# Show a specific run
+runbook show <run-id>
+
+# Show a specific step's artifacts
+runbook show <run-id> <step-id>
+
+# Diff two runs
+runbook diff <run-id-1> <run-id-2>
+
+# Sync with remote
+runbook push
+runbook pull
+```
+
+## Configuration
+
+Create `runbook.config.ts` in your project root:
+
+```typescript
+import { defineConfig, defineWorkflow, fn } from "@f0rbit/runbook";
+import { z } from "zod";
+import { ok } from "@f0rbit/corpus";
+
+const hello = fn({
+  id: "hello",
+  input: z.object({ name: z.string() }),
+  output: z.object({ greeting: z.string() }),
+  run: async (input) => ok({ greeting: `Hello, ${input.name}!` }),
+});
+
+const workflow = defineWorkflow(z.object({ name: z.string() }))
+  .pipe(hello, (wf) => ({ name: wf.name }))
+  .done("hello-world", z.object({ greeting: z.string() }));
+
+export default defineConfig({
+  workflows: [workflow],
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  artifacts: { git: true },
+});
+```
+
+Config discovery: `--config` flag > `runbook.config.ts` in cwd > walk up parent dirs.
+
+## Architecture
+
+```
+CLI ──HTTP──> Server (Hono)
+                ├── Engine
+                │   ├── fn steps (in-process)
+                │   ├── shell steps (ShellProvider)
+                │   ├── agent steps (AgentExecutor)
+                │   └── checkpoint steps (pause/resume)
+                ├── State Store (in-memory)
+                └── Git Artifact Store (refs/runbook/runs/*)
+```
+
+The CLI is a thin HTTP client. All execution happens in the server process. The engine dispatches to provider interfaces -- never calls `Bun.spawn` or LLM APIs directly. Providers are swappable: use `BunShellProvider` in production, `InMemoryShellProvider` in tests.
+
+## Development
+
+```bash
+bun install
+bun run typecheck
+bun test
+bun run lint
+```
+
+---
+
+# Use Cases
+
+# @f0rbit/runbook -- Use Case
+
+## 1. The Problem
+
+Software teams increasingly use AI coding agents -- Claude Code, Cursor, OpenCode, Aider, Goose -- for real development work. Not chat. Full coding sessions that read files, edit code, run tests, and deploy. But there is no standard way to:
+
+**Orchestrate multi-step agent workflows.** "Analyze this PR, then fix the issues, then run tests, then open a PR" requires manual coordination or brittle shell scripts. Each step is a separate agent invocation with no typed contract between them.
+
+**Validate agent output.** Agents return unstructured text. There is no compile-time guarantee that what one step produces matches what the next step expects. A code review agent might return `{ comments: [...] }` or it might return a paragraph of prose -- the downstream step has no way to know until runtime.
+
+**Audit what happened.** Agent sessions produce logs, but there is no structured trace of decisions, tool calls, and outputs across a multi-step pipeline. When a deployment goes wrong after an agent-assisted change, reconstructing what the agent did requires digging through terminal scrollback.
+
+**Test agent workflows.** You cannot unit test a workflow that calls GPT-4. Each run costs money, takes 30-60 seconds, and produces non-deterministic output. You need in-memory fakes that run instantly and deterministically.
+
+**Compose workflows.** Reusing a "review code" workflow inside a "deploy feature" workflow should not require copy-pasting steps. Workflows should be composable units with typed boundaries.
+
+These are not hypothetical problems. They are the daily reality of teams that have moved past "ask the AI a question" into "the AI is part of our development pipeline."
+
+## 2. The Solution
+
+Runbook is a typed workflow engine where AI agents are first-class step types alongside pure functions, shell commands, and human checkpoints. Workflows are defined in TypeScript with Zod schemas at every boundary. The compiler catches wiring errors before any code runs.
+
+### Key Differentiators
+
+**Compile-time type safety.** Every step declares its input and output as Zod schemas. The `pipe()` builder method infers types across the chain -- if step B expects `{ files: string[] }` but step A produces `{ result: string }`, TypeScript catches it at compile time.
+
+```typescript
+const pipeline = defineWorkflow({ id: "review", input: z.object({ pr_url: z.string() }) })
+  .pipe(fetchDiff, (wf) => ({ url: wf.pr_url }))
+  .pipe(reviewAgent, (wf, prev) => ({
+    diff: prev.diff,         // TypeScript knows prev has { diff: string }
+    guidelines: "standard",
+  }))
+  .done();
+```
+
+**AgentExecutor pattern.** Agent steps dispatch to a pluggable executor interface, not raw LLM APIs. The executor manages sessions, prompts, tool calls, and permissions. OpenCode is the first implementation; Claude Code, Aider, and others can be added behind the same interface without changing workflow definitions.
+
+**Two agent output modes.** `"analyze"` mode extracts structured JSON from the LLM's text response (for analysis, review, planning). `"build"` mode derives output from session metadata like `files_changed` (for code generation, refactoring). The engine handles both -- workflow authors just declare the mode and the output schema.
+
+**In-memory test providers.** Every external dependency (shell execution, agent sessions, human checkpoints) is behind a Provider interface. Swap in `InMemoryShellProvider`, `InMemoryAgentExecutor`, and `InMemoryCheckpointProvider` for instant, deterministic tests. No mocking libraries. No network calls. Sub-second test runs.
+
+**Structured traces.** Every execution produces a typed event stream: workflow lifecycle, step inputs/outputs, agent session creation, tool calls, checkpoint decisions. Not string logs -- typed `TraceEvent` objects that can be queried, diffed, and stored.
+
+**Git artifact store.** Completed runs are stored in git's object database under custom refs (`refs/runbook/runs/<run-id>`). Invisible to `git log`. Pushable and pullable like any git ref. Every prompt sent to every agent, every response, every tool call, every retry -- recorded and content-addressed. No other AI coding tool provides this level of auditability.
+
+## 3. Use Cases
+
+### 3.1 Automated Code Review Pipeline
+
+```
+read PR diff -> agent: analyze for issues -> agent: suggest fixes
+  -> checkpoint: human approval -> apply fixes -> run tests
+```
+
+The analysis agent's output schema is explicit:
+
+```typescript
+z.object({
+  issues: z.array(z.object({
+    file: z.string(),
+    line: z.number(),
+    description: z.string(),
+    severity: z.enum(["error", "warning", "info"]),
+  })),
+})
+```
+
+If the agent returns garbage, the pipeline fails immediately with a structured validation error -- not silently, not downstream when the next step tries to access `issues[0].file` on undefined.
+
+### 3.2 Feature Implementation Workflow
+
+```
+parse spec -> agent: plan implementation -> checkpoint: approve plan
+  -> agent: write code -> shell: run tests -> agent: fix failures -> shell: lint
+```
+
+The planning agent uses `mode: "analyze"` and returns `{ files_to_create, files_to_modify, approach }`. The coding agent uses `mode: "build"` and returns `{ files_changed, success }` derived from session metadata. The planning output feeds directly into the coding prompt -- typed end-to-end. No string munging, no "parse the agent's response and hope it has the right fields."
+
+### 3.3 CI/CD with Agent Steps
+
+```
+shell: build -> shell: test -> agent: analyze test failures
+  -> checkpoint: deploy approval -> shell: deploy
+```
+
+Traditional CI steps (build, test, deploy) composed with agent intelligence (failure analysis) and human gates (deploy approval). The trace records exactly what the agent recommended and whether the human approved. When something goes wrong in production, you can inspect the full decision chain.
+
+### 3.4 Documentation Generation
+
+```
+agent: scan codebase -> agent: generate docs -> shell: format with prettier
+  -> checkpoint: review
+```
+
+The scanning agent produces a typed codebase summary. The documentation agent consumes it. Prettier formats the output. A human reviews before merge. Each step is independently testable with in-memory providers.
+
+### 3.5 Incident Response Runbook
+
+```
+shell: collect logs -> agent: analyze root cause -> agent: draft fix
+  -> checkpoint: approve -> agent: implement fix -> shell: run tests
+  -> shell: deploy hotfix
+```
+
+The literal use case that inspired the name. Executable runbooks that combine automated analysis with human oversight. The git artifact store records the full incident response -- which logs were analyzed, what root cause the agent identified, what fix was proposed, who approved it, and what tests passed before deployment.
+
+## 4. Who Is This For
+
+**Teams building AI-augmented dev tooling.** You need a typed pipeline runtime, not another prompt chain library. Runbook gives you compile-time step wiring, structured traces, and testable workflows without mocking.
+
+**Platform engineers.** Standardize how agent workflows are defined, tested, and audited across teams. The Provider pattern means you control which agent backends are available. The git artifact store means every agent interaction is recorded and reviewable.
+
+**Solo developers.** Automate multi-step coding workflows with structured output and full traceability. Define your personal runbooks in TypeScript, test them locally with in-memory providers, run them with real agents when ready.
+
+## 5. Why Not X
+
+**vs. LangChain / LlamaIndex.** These are LLM prompt chain libraries. Runbook is a workflow engine where agents are one step type among many. LangChain does not have shell steps, checkpoint steps, or compile-time type checking of step boundaries. It is designed for prompt engineering; Runbook is designed for workflow orchestration.
+
+**vs. Temporal / Inngest.** Temporal is a distributed workflow engine for microservices. Runbook is purpose-built for AI agent orchestration with typed step boundaries and structured traces. No Java/Go required, no cluster setup, no Temporal server. Runbook runs locally on Bun with a single server process.
+
+**vs. GitHub Actions / CI systems.** Actions are cloud-hosted CI/CD with YAML definitions. Runbook is a local-first TypeScript engine where AI agents are first-class, output is typed, and workflows are testable without Docker or cloud infrastructure. Actions cannot pause for human input mid-workflow or validate agent output against a schema.
+
+**vs. Raw scripting.** Shell scripts and Node.js scripts do not give you type-safe step composition, structured traces, in-memory test doubles, or human checkpoint gates. A shell script that calls three agents in sequence has no way to validate that agent A's output matches agent B's expected input.
+
+**vs. Custom orchestrators.** Building your own with Zod + fetch is viable for a single workflow. It stops being viable when you need structured traces, checkpoint pausing, parallel fan-out, sub-workflow composition, git-based artifact storage, and a test harness -- all of which Runbook provides out of the box.
+
+## 6. Architecture at a Glance
+
+Runbook uses a client/server architecture:
+
+- **Server** (`@f0rbit/runbook-server`): Hono HTTP server that hosts the execution engine, manages run state, and dispatches steps to providers. Runs as a persistent process.
+- **CLI** (`@f0rbit/runbook-cli`): Thin HTTP client. Submits workflow runs, streams real-time trace events via SSE, handles checkpoint prompts via stdin.
+- **Core SDK** (`@f0rbit/runbook`): Type definitions, step builders, workflow builder, trace types. Consumed by both server and users who define workflows. No runtime dependencies beyond Zod and `@f0rbit/corpus`.
+- **Git Store** (`@f0rbit/runbook-git-store`): Stores completed runs in git refs. Reads and writes git objects directly via `git hash-object`, `git mktree`, and `git update-ref`.
+
+Providers are injected, never hardcoded. The engine dispatches `"fn"` steps directly, `"shell"` steps to `ShellProvider`, `"agent"` steps to `AgentExecutor`, and `"checkpoint"` steps to `CheckpointProvider`. Swap any provider for an in-memory fake in tests.
+
+Traces are stored in git refs (`refs/runbook/runs/<run-id>`) alongside step-level artifacts: inputs, outputs, agent prompts, agent responses, and retry iterations. These refs are invisible to `git log`, pushable/pullable independently, and browsable via `runbook show` and `runbook diff`.
+
+## 7. Current Status and Future Scope
+
+Runbook v0.1 ships with linear pipelines, parallel fan-out/fan-in, four step types (fn, shell, agent, checkpoint), in-memory state, and git artifact storage. OpenCode is the first agent executor.
+
+Planned for future versions:
+
+- **Persistence** -- SQLite + Drizzle for durable run state across server restarts
+- **Conditional branching** -- route to different steps based on previous output
+- **Retry policies** -- configurable retry with backoff for failed steps
+- **Workflow visualizer** -- terminal and web UI for trace inspection
+- **Additional agent executors** -- Claude Code, Aider, Goose behind the same AgentExecutor interface
+- **MCP integration** -- expose workflows as MCP tools, consume MCP servers as step providers
+- **Node.js support** -- currently Bun-only; Node.js runtime support in a future release
+
+---
+
+# Package API Reference
+
+## @f0rbit/runbook (packages/core)
+
+```typescript
+// Types (re-export all from types.ts)
+
+// Error constructors
+export { errors } from "./errors";
+// Schemas & config helper
+export {
+	AgentExecutorConfigSchema,
+	AgentStepOptsSchema,
+	ArtifactsConfigSchema,
+	defineConfig,
+	ProviderConfigSchema,
+	RunbookConfigSchema,
+	RunStateSchema,
+	ServerConfigSchema,
+	TraceEventSchema,
+	TraceSchema,
+	WorkflowInfoSchema,
+} from "./schema";
+
+// Step builders
+export { agent, checkpoint, fn, shell } from "./step";
+// Trace collector
+export { TraceCollector } from "./trace";
+export type {
+	AgentError,
+	AgentEvent,
+	AgentExecutor,
+	AgentExecutorConfig,
+	AgentOutputMode,
+	AgentPermission,
+	AgentResponse,
+	AgentSession,
+	AgentStepOpts,
+	AgentToolCall,
+	CheckpointError,
+	CheckpointProvider,
+	ClientError,
+	CreateSessionOpts,
+	EngineHandle,
+	MapperFn,
+	ParallelOutputTuple,
+	ParallelStepDef,
+	PendingCheckpoint,
+	PromptOpts,
+	ProviderConfig,
+	RunbookConfig,
+	RunResult,
+	RunState,
+	ServerConfig,
+	ShellError,
+	ShellOpts,
+	ShellProvider,
+	ShellResult,
+	Step,
+	StepContext,
+	StepError,
+	StepKind,
+	StepNode,
+	Trace,
+	TraceEmitter,
+	TraceEvent,
+	Workflow,
+	WorkflowBuilder,
+	WorkflowError,
+} from "./types";
+// Workflow builder
+export { defineWorkflow } from "./workflow";
+```
+
+## @f0rbit/runbook-server (packages/server)
+
+```typescript
+// Engine
+
+export type { Engine, EngineOpts, RunOpts } from "./engine";
+export { createEngine } from "./engine";
+export type { PendingCheckpointRegistry } from "./providers/checkpoint";
+export { createServerCheckpointProvider } from "./providers/checkpoint";
+export type { OpenCodeExecutorOpts } from "./providers/opencode";
+export { OpenCodeExecutor } from "./providers/opencode";
+export type { ResolvedProviders, ResolveError, VerifyError } from "./providers/resolve";
+export { resolveProviders, verifyProviders } from "./providers/resolve";
+// Providers
+export { BunShellProvider } from "./providers/shell";
+
+// Routes
+export type { RunDeps } from "./routes/runs";
+export type { WorkflowDeps } from "./routes/workflows";
+
+// Server
+export type { ServerDeps } from "./server";
+export { createServer } from "./server";
+
+// State
+export type { RunStateStore } from "./state";
+export { createInMemoryStateStore } from "./state";
+```
+
+## @f0rbit/runbook-cli (packages/cli)
+
+```typescript
+#!/usr/bin/env bun
+
+import { handleCancel } from "./commands/cancel";
+import { handleDiff } from "./commands/diff";
+import { handleHistory } from "./commands/history";
+import { handleList } from "./commands/list";
+import { handlePull } from "./commands/pull";
+import { handlePush } from "./commands/push";
+import { handleRun } from "./commands/run";
+import { handleServe } from "./commands/serve";
+import { handleShow } from "./commands/show";
+import { handleStatus } from "./commands/status";
+import { handleTrace } from "./commands/trace";
+
+const DEFAULT_URL = "http://localhost:4400";
+
+function getBaseUrl(args: string[]): string {
+	const url_idx = args.indexOf("--url");
+	if (url_idx !== -1 && args[url_idx + 1]) return args[url_idx + 1];
+	return process.env.RUNBOOK_URL ?? DEFAULT_URL;
+}
+
+function printHelp() {
+	console.log(`Usage: runbook <command> [options]
+
+Commands:
+  serve                        Start the runbook server
+  run <workflow> [task...] [--input json] Submit a workflow run
+  status [run-id] [--live]     Get run status (--live to stream events)
+  trace <run-id>               Display run trace
+  list                         List available workflows
+  history                      List stored runs from git
+  show <run-id> [step-id]      Show run or step artifacts
+  diff <run-id-1> <run-id-2>   Diff two stored runs
+  push [--remote origin]       Push artifact refs to remote
+  cancel [run-id]              Cancel a running workflow
+  pull [--remote origin]       Pull artifact refs from remote
+
+Options:
+  --url <url>                  Server URL (default: http://localhost:4400)
+  --config <path>              Config file path
+  --help                       Show this help
+`);
+}
+
+const args = process.argv.slice(2);
+const [cmd, ...rest] = args;
+
+switch (cmd) {
+	case "serve":
+		await handleServe(rest);
+		break;
+	case "run":
+		await handleRun(rest, getBaseUrl(args));
+		break;
+	case "status":
+		await handleStatus(rest, getBaseUrl(args));
+		break;
+	case "trace":
+		await handleTrace(rest, getBaseUrl(args));
+		break;
+	case "list":
+		await handleList(rest, getBaseUrl(args));
+		break;
+	case "history":
+		await handleHistory(rest);
+		break;
+	case "show":
+		await handleShow(rest, getBaseUrl(args));
+		break;
+	case "diff":
+		await handleDiff(rest);
+		break;
+	case "push":
+		await handlePush(rest);
+		break;
+	case "cancel":
+		await handleCancel(rest, getBaseUrl(args));
+		break;
+	case "pull":
+		await handlePull(rest);
+		break;
+	case "--help":
+	case "-h":
+	case undefined:
+		printHelp();
+		break;
+	default:
+		console.error(`Unknown command: ${cmd}`);
+		printHelp();
+		process.exit(1);
+}
+```
+
+## @f0rbit/runbook-git-store (packages/git-store)
+
+```typescript
+export { createGitArtifactStore } from "./store";
+export type {
+	GitArtifactStore,
+	GitStoreError,
+	ListOpts,
+	StepArtifacts,
+	StorableRun,
+	StoredRun,
+	StoredRunInfo,
+	StoreOpts,
+	SyncOpts,
+	SyncResult,
+} from "./types";
+```
+
+---
+
+# CLI Command Reference
+
+```
+Usage: runbook <command> [options]
+
+Commands:
+  serve                        Start the runbook server
+  run <workflow> [task...] [--input json] Submit a workflow run
+  status [run-id] [--live]     Get run status (--live to stream events)
+  trace <run-id>               Display run trace
+  list                         List available workflows
+  history                      List stored runs from git
+  show <run-id> [step-id]      Show run or step artifacts
+  diff <run-id-1> <run-id-2>   Diff two stored runs
+  push [--remote origin]       Push artifact refs to remote
+  cancel [run-id]              Cancel a running workflow
+  pull [--remote origin]       Pull artifact refs from remote
+
+Options:
+  --url <url>                  Server URL (default: http://localhost:4400)
+  --config <path>              Config file path
+  --help                       Show this help
+```
+
+---
+
+# Documentation
+
+## @f0rbit/runbook (index.mdx)
+
+# @f0rbit/runbook
+
+### Typed workflow engine for orchestrating AI agents, shell commands, and human checkpoints
+
+Define workflows as typed pipelines. Wire AI agents, shell commands, and human checkpoints into composable steps — with Zod schemas enforcing correctness at every boundary.
+
+---
+
+## Features
+
+### Type Safety
+
+Zod schemas at every step boundary. Mis-wired pipelines fail at compile time, not runtime.
+
+### Agent Steps
+
+AI agents as first-class workflow steps with typed I/O. Analyze mode for JSON output, build mode for code generation.
+
+### Testable
+
+In-memory providers for instant, deterministic tests. No mocking, no network calls, no API costs.
+
+### Traces
+
+Typed event streams, not string logs. 14 event types covering workflow lifecycle, agent sessions, and checkpoints.
+
+### Git Store
+
+Every prompt, response, and tool call stored in git refs. Invisible to `git log`, pushable/pullable.
+
+### Composable
+
+`pipe()`, `parallel()`, `asStep()`. Build complex workflows from simple, reusable pieces.
+
+---
+
+## Quick Example
+
+A minimal workflow that dispatches to an AI agent with fully typed input and output:
+
+```typescript
+import { agent, defineWorkflow } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: z.object({ issues: z.array(z.string()), severity: z.enum(["low", "medium", "high"]) }),
+  prompt: (input) => `Analyze this code:\n${input.code}`,
+});
+
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .pipe(analyze, (wf) => ({ code: wf.code }))
+  .done("code-review", z.object({ issues: z.array(z.string()), severity: z.enum(["low", "medium", "high"]) }));
+```
+
+---
+
+## Learn More
+
+- [Get Started](/runbook/getting-started/installation/) — Install and set up
+- [Quick Start](/runbook/getting-started/quick-start/) — Build your first workflow
+- [Concepts](/runbook/concepts/steps/) — Learn the fundamentals
+- [API Reference](/runbook/packages/core/) — Full package documentation
+
+---
+
+## Installation (getting-started/installation.mdx)
+
+# Installation
+
+## Prerequisites
+
+Runbook requires the [Bun](https://bun.sh) runtime. Node.js is not supported in v0.1.
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+## Packages
+
+The project is split into focused packages — install only what you need.
+
+| Package | Description |
+|---------|-------------|
+| `@f0rbit/runbook` | Core SDK — types, step builders, workflow builder, trace types |
+| `@f0rbit/runbook-server` | Hono HTTP server — engine, providers, routes, state |
+| `@f0rbit/runbook-cli` | Thin CLI client — HTTP client, command handlers, config |
+| `@f0rbit/runbook-git-store` | Git-based artifact store for workflow traces and agent sessions |
+
+### Peer dependencies
+
+All packages expect `zod` and `@f0rbit/corpus` as peer dependencies:
+
+- **zod** — schema definitions and runtime validation
+- **@f0rbit/corpus** — `Result<T, E>` types for error handling without exceptions
+
+## Typical install
+
+Most users need the core SDK, the server (which includes the engine), and the peer dependencies:
+
+```bash
+bun add @f0rbit/runbook @f0rbit/runbook-server zod @f0rbit/corpus
+```
+
+Install the CLI globally to run workflows from the terminal:
+
+```bash
+bun add -g @f0rbit/runbook-cli
+```
+
+### Individual packages
+
+Install packages individually if you only need a subset:
+
+```bash
+# Core SDK only (for defining workflows and types)
+bun add @f0rbit/runbook
+
+# Server (engine + HTTP routes)
+bun add @f0rbit/runbook-server
+
+# CLI client
+bun add @f0rbit/runbook-cli
+
+# Git-based artifact store
+bun add @f0rbit/runbook-git-store
+```
+
+## Development setup
+
+For contributors working on the runbook project itself:
+
+```bash
+git clone https://github.com/f0rbit/runbook
+cd runbook
+bun install
+```
+
+The repository is a Bun workspace monorepo with packages under `packages/`. After installing, verify everything works:
+
+```bash
+# Type checking
+bun run typecheck
+
+# Run all tests
+bun test
+
+# Lint (uses Biome, not ESLint)
+bun run lint
+```
+
+## What's next
+
+Now that you have runbook installed, build your first workflow in the [Quick Start](/runbook/getting-started/quick-start/).
+
+---
+
+## Quick Start (getting-started/quick-start.mdx)
+
+# Quick Start
+
+This guide walks you through building a code review workflow that sends code to an AI agent and returns typed, validated results.
+
+## Install
+
+```bash
+bun add @f0rbit/runbook @f0rbit/runbook-server zod @f0rbit/corpus
+```
+
+## Define an agent step
+
+Every step starts with Zod schemas that define its input and output. The engine validates data at every boundary — if a schema doesn't match, you get a typed error, not a runtime crash.
+
+```typescript
+import { agent, defineWorkflow } from "@f0rbit/runbook";
+import { createEngine } from "@f0rbit/runbook-server";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const IssueSchema = z.object({
+  issues: z.array(z.string()),
+  severity: z.enum(["low", "medium", "high"]),
+});
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: IssueSchema,
+  prompt: (input) => `Analyze this code for issues:\n${input.code}`,
+});
+```
+
+Breaking this down:
+
+- **`id`** — unique identifier for the step, used in traces and logs
+- **`input`** — Zod schema defining what data the step accepts
+- **`output`** — Zod schema defining what the agent must return (validated at runtime)
+- **`prompt`** — function that receives the validated input and generates the agent instruction
+
+The `agent()` builder creates a step that dispatches to an `AgentExecutor` provider. The agent's response is parsed and validated against the output schema automatically.
+
+## Define a workflow
+
+Chain steps into a pipeline using `pipe()`:
+
+```typescript
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .pipe(analyze, (wf_input) => ({ code: wf_input.code }))
+  .done("code-review", IssueSchema);
+```
+
+Three things happen here:
+
+1. **`defineWorkflow(schema)`** — creates a new workflow with a Zod schema for the workflow input
+2. **`.pipe(step, mapper)`** — adds a step to the pipeline. The mapper function receives `(workflow_input, previous_step_output)` and returns the input for the next step. For the first step there is no previous output, so only the workflow input is used.
+3. **`.done(id, schema)`** — finalizes the workflow with an ID and output schema. The output schema of the last step must match.
+
+You can chain multiple `.pipe()` calls — each step receives the workflow input and the output of the previous step, giving you full control over data flow.
+
+## Create an engine and run
+
+The engine dispatches each step to the appropriate provider. Agent steps need an `AgentExecutor`, shell steps need a `ShellProvider`, and so on.
+
+```typescript
+const engine = createEngine({ providers: { agent: myAgentExecutor } });
+const result = await engine.run(workflow, { code: "console.log('hello')" });
+```
+
+`createEngine()` accepts a providers object — pass in implementations for each step type your workflow uses. The engine never calls external APIs directly; everything goes through providers, which makes the system testable and swappable.
+
+## Inspect the result
+
+Results use the `Result<T, E>` pattern from `@f0rbit/corpus`. No exceptions — errors are values.
+
+```typescript
+if (result.ok) {
+  console.log(result.value.output);      // { issues: [...], severity: "low" }
+  console.log(result.value.trace);       // Full typed event stream
+  console.log(result.value.duration_ms); // Execution time
+} else {
+  console.error(result.error);           // Typed WorkflowError
+}
+```
+
+- **`result.ok`** — `true` on success, `false` on failure
+- **`result.value.output`** — the final workflow output, fully typed from the Zod schema
+- **`result.value.trace`** — a typed event stream capturing every step execution, timing, and agent interaction
+- **`result.value.duration_ms`** — total wall-clock execution time
+- **`result.error`** — on failure, a typed `WorkflowError` describing what went wrong and where
+
+## Next steps
+
+- [Steps reference](/runbook/concepts/steps/) — all four step types: `fn()`, `shell()`, `agent()`, `checkpoint()`
+- [Workflow composition](/runbook/concepts/workflows/) — `pipe()`, `parallel()`, and `asStep()` for sub-workflows
+- [Testing](/runbook/guides/testing/) — in-memory providers for testing workflows without external dependencies
+
+---
+
+## Configuration (concepts/configuration.mdx)
+
+# Configuration
+
+Runbook uses a TypeScript config file for workflow definitions, server options, and provider setup. The config is type-safe with full autocomplete support.
+
+## defineConfig()
+
+Type-safe pass-through that provides autocomplete in config files.
+
+```typescript
+function defineConfig<T extends {
+  workflows: unknown[];
+  server?: ServerConfig;
+  providers?: ProviderConfig;
+  artifacts?: ArtifactsConfig;
+  working_directory?: string;
+}>(config: T): T
+```
+
+This is an identity function — it returns the config object unchanged. Its purpose is to give TypeScript the type information needed for autocomplete and validation in your editor.
+
+---
+
+## Config fields
+
+### workflows
+
+**Type:** `Workflow<any, any>[]`
+**Required:** Yes
+
+Array of workflow definitions. Each workflow is created with `defineWorkflow()` and finalized with `.done()`.
+
+### server
+
+**Type:** `ServerConfig`
+**Required:** No
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `port` | `number` | `4400` | HTTP server port |
+
+### providers
+
+**Type:** `ProviderConfig`
+**Required:** No
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agent` | `AgentProviderConfig` | Agent executor configuration |
+
+**AgentProviderConfig:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Provider type (e.g. `"opencode"`) |
+| `base_url` | `string` | Provider base URL |
+| `auto_approve` | `boolean` | Auto-approve agent actions |
+
+### artifacts
+
+**Type:** `ArtifactsConfig`
+**Required:** No
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `git` | `boolean` | `false` | Enable git-based artifact store for traces |
+
+### working_directory
+
+**Type:** `string`
+**Required:** No
+
+Working directory for the engine. Propagates to shell step `opts.cwd` and agent `createSession` working directory. Can be overridden at each level.
+
+---
+
+## Full example
+
+```typescript
+import { defineConfig, defineWorkflow, fn, shell, agent, checkpoint } from "@f0rbit/runbook";
+import { z } from "zod";
+import { ok } from "@f0rbit/corpus";
+
+const hello = fn({
+  id: "hello",
+  input: z.object({ name: z.string() }),
+  output: z.object({ greeting: z.string() }),
+  run: async (input) => ok({ greeting: `Hello, ${input.name}!` }),
+});
+
+const workflow = defineWorkflow(z.object({ name: z.string() }))
+  .pipe(hello, (wf) => ({ name: wf.name }))
+  .done("hello-world", z.object({ greeting: z.string() }));
+
+export default defineConfig({
+  workflows: [workflow],
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  artifacts: { git: true },
+  working_directory: process.cwd(),
+});
+```
+
+---
+
+## Config discovery
+
+The CLI searches for a config file in the following order:
+
+### Priority
+
+1. **`--config <path>` flag** — explicit path, used as-is
+2. **`runbook.config.ts` in current working directory** — project-local config
+3. **Walk up parent directories** — search for `runbook.config.ts` in each ancestor directory
+4. **`~/.config/runbook/runbook.config.ts`** — global fallback
+
+The first config file found is used. Local configs always take precedence over global.
+
+### Project-local config
+
+Place a `runbook.config.ts` in your project root. This is the typical setup:
+
+```
+my-project/
+├── src/
+├── runbook.config.ts   ← discovered automatically
+└── package.json
+```
+
+### Global config
+
+The global fallback at `~/.config/runbook/runbook.config.ts` enables user-wide workflow definitions separate from project configs. This is useful for personal workflows that apply across all projects:
+
+```
+~/.config/runbook/
+├── runbook.config.ts     ← global workflows
+├── prompts/              ← shared system prompts
+│   ├── coder.md
+│   └── reviewer.md
+└── schemas/              ← shared Zod schemas
+    └── common.ts
+```
+
+### Explicit config
+
+Override discovery with the `--config` flag:
+
+```bash
+runbook run my-workflow --config ./custom/runbook.config.ts
+```
+
+---
+
+## working_directory propagation
+
+The `working_directory` field propagates through the system:
+
+```
+RunbookConfig.working_directory
+  → Engine options
+    → ShellProvider opts.cwd (shell steps execute here)
+    → AgentExecutor createSession working_directory (agents start here)
+    → system_prompt_file resolution (relative paths resolved against this)
+```
+
+Each level can override the parent:
+
+- Config sets the default
+- Engine options can override the config
+- Individual step execution can override the engine
+
+### Relative system prompt paths
+
+When a `system_prompt_file` is specified with a relative path on an agent step, it is resolved against the engine's `working_directory`:
+
+```typescript
+const coder = agent({
+  id: "coder",
+  input: z.object({ task: z.string() }),
+  output: z.object({ result: z.string() }),
+  prompt: (input) => input.task,
+  agent_opts: {
+    system_prompt_file: "./prompts/coder.md", // resolved against working_directory
+  },
+});
+```
+
+Absolute paths are used as-is.
+
+---
+
+## Providers (concepts/providers.mdx)
+
+# Providers
+
+All external I/O in runbook is behind provider interfaces. The engine dispatches to providers — it never calls `Bun.spawn`, LLM APIs, or stdin directly. This makes every workflow fully testable with in-memory fakes.
+
+## Overview
+
+| Provider | Step type | Production | Testing |
+|----------|-----------|------------|---------|
+| `ShellProvider` | `shell()` | `BunShellProvider` | `InMemoryShellProvider` |
+| `AgentExecutor` | `agent()` | `OpenCodeExecutor` | `InMemoryAgentExecutor` |
+| `CheckpointProvider` | `checkpoint()` | `createServerCheckpointProvider()` | `InMemoryCheckpointProvider` |
+
+Production implementations live in `@f0rbit/runbook-server`. In-memory fakes live in `@f0rbit/runbook/test`.
+
+---
+
+## ShellProvider
+
+Executes shell commands. Used by `shell()` steps.
+
+### Interface
+
+```typescript
+type ShellProvider = {
+  exec: (command: string, opts?: ShellOpts) => Promise<Result<ShellResult, ShellError>>;
+};
+```
+
+### Types
+
+```typescript
+type ShellOpts = {
+  cwd?: string;
+  env?: Record<string, string>;
+  timeout_ms?: number;
+  signal?: AbortSignal;
+};
+
+type ShellResult = {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+};
+
+type ShellError = {
+  kind: "shell_spawn_error";
+  command: string;
+  cause: string;
+};
+```
+
+### BunShellProvider
+
+Production implementation from `@f0rbit/runbook-server`. Spawns real processes via Bun's shell API.
+
+```typescript
+import { BunShellProvider } from "@f0rbit/runbook-server";
+
+const shell = new BunShellProvider();
+const result = await shell.exec("ls -la", { cwd: "/tmp" });
+```
+
+### InMemoryShellProvider
+
+Testing implementation from `@f0rbit/runbook/test`. Returns pre-configured responses without spawning processes.
+
+```typescript
+import { InMemoryShellProvider } from "@f0rbit/runbook/test";
+import { ok } from "@f0rbit/corpus";
+
+const shell = new InMemoryShellProvider({
+  "eslint src/": ok({ stdout: "", stderr: "", exit_code: 0 }),
+  "bun test": ok({ stdout: "3 tests passed", stderr: "", exit_code: 0 }),
+});
+```
+
+---
+
+## AgentExecutor
+
+Manages AI agent sessions. Used by `agent()` steps.
+
+### Interface
+
+```typescript
+type AgentExecutor = {
+  createSession: (opts: CreateSessionOpts) => Promise<Result<AgentSession, AgentError>>;
+  prompt: (session_id: string, opts: PromptOpts) => Promise<Result<AgentResponse, AgentError>>;
+  subscribe?: (session_id: string, handler: (event: AgentEvent) => void) => () => void;
+  destroySession?: (session_id: string) => Promise<Result<void, AgentError>>;
+  healthCheck?: () => Promise<Result<void, AgentError>>;
+};
+```
+
+### Types
+
+```typescript
+type CreateSessionOpts = {
+  system_prompt?: string;
+  working_directory?: string;
+  model?: { provider_id: string; model_id: string };
+  agent_type?: string;
+  permissions?: AgentPermission[];
+};
+
+type AgentSession = {
+  session_id: string;
+};
+
+type PromptOpts = {
+  prompt: string;
+  output_schema?: z.ZodType;
+};
+
+type AgentResponse = {
+  text: string;
+  metadata?: Record<string, unknown>;
+};
+
+type AgentError =
+  | { kind: "agent_session_error"; cause: string }
+  | { kind: "agent_prompt_error"; session_id: string; cause: string }
+  | { kind: "agent_timeout"; session_id: string; timeout_ms: number };
+```
+
+### OpenCodeExecutor
+
+Production implementation from `@f0rbit/runbook-server`. Dispatches to OpenCode AI agent sessions.
+
+```typescript
+import { OpenCodeExecutor } from "@f0rbit/runbook-server";
+
+const executor = new OpenCodeExecutor({
+  base_url: "http://localhost:3000",
+});
+```
+
+### InMemoryAgentExecutor
+
+Testing implementation from `@f0rbit/runbook/test`. Returns pre-configured responses and tracks session creation for test assertions.
+
+```typescript
+import { InMemoryAgentExecutor } from "@f0rbit/runbook/test";
+import { ok } from "@f0rbit/corpus";
+
+const executor = new InMemoryAgentExecutor({
+  responses: {
+    review: ok({
+      text: JSON.stringify({ approved: true, comments: [] }),
+      metadata: {},
+    }),
+  },
+});
+
+// After running a workflow, inspect session creation:
+console.log(executor.created_sessions); // [{ system_prompt: "...", ... }]
+```
+
+---
+
+## CheckpointProvider
+
+Handles human-in-the-loop approval. Used by `checkpoint()` steps.
+
+### Interface
+
+```typescript
+type CheckpointProvider = {
+  prompt: (message: string, schema: z.ZodType) => Promise<Result<unknown, CheckpointError>>;
+};
+```
+
+### Types
+
+```typescript
+type CheckpointError =
+  | { kind: "checkpoint_timeout"; step_id: string; timeout_ms: number }
+  | { kind: "checkpoint_rejected"; step_id: string }
+  | { kind: "checkpoint_invalid_input"; step_id: string; issues: z.ZodIssue[] };
+```
+
+### createServerCheckpointProvider()
+
+Production implementation from `@f0rbit/runbook-server`. Bridges the engine's checkpoint flow with an HTTP endpoint — the engine pauses, the server exposes a POST endpoint, and the CLI prompts the user via stdin.
+
+```typescript
+import { createServerCheckpointProvider } from "@f0rbit/runbook-server";
+
+const checkpoint_provider = createServerCheckpointProvider();
+```
+
+### InMemoryCheckpointProvider
+
+Testing implementation from `@f0rbit/runbook/test`. Returns pre-configured responses without user interaction.
+
+```typescript
+import { InMemoryCheckpointProvider } from "@f0rbit/runbook/test";
+import { ok } from "@f0rbit/corpus";
+
+const checkpoint = new InMemoryCheckpointProvider({
+  approve: ok({ approved: true }),
+});
+```
+
+---
+
+## resolveProviders()
+
+From `@f0rbit/runbook-server`. Creates real providers from a `ProviderConfig` object.
+
+```typescript
+function resolveProviders(config: ProviderConfig): Providers
+```
+
+Behavior:
+
+- Always creates a `BunShellProvider`
+- Creates an `OpenCodeExecutor` when `config.agent.type === "opencode"`
+- Creates a `createServerCheckpointProvider()` for checkpoint support
+
+```typescript
+import { resolveProviders } from "@f0rbit/runbook-server";
+
+const providers = resolveProviders({
+  agent: { type: "opencode", base_url: "http://localhost:3000" },
+});
+```
+
+## verifyProviders()
+
+Checks that required providers are available for a workflow's step types. Call this before execution to get a clear error if a provider is missing.
+
+```typescript
+import { verifyProviders } from "@f0rbit/runbook-server";
+
+const result = verifyProviders(workflow, providers);
+if (!result.ok) {
+  console.error(result.error); // "Missing AgentExecutor for agent step 'review'"
+}
+```
+
+---
+
+## Wiring providers to the engine
+
+Pass providers when creating the engine:
+
+```typescript
+import { createEngine } from "@f0rbit/runbook-server";
+
+const engine = createEngine({
+  providers: {
+    shell: new BunShellProvider(),
+    agent: executor,
+    checkpoint: checkpoint_provider,
+  },
+  working_directory: process.cwd(),
+});
+```
+
+The engine dispatches each step to the appropriate provider. If a step type has no provider, execution fails with a typed error.
+
+## Testing with in-memory providers
+
+```typescript
+import { InMemoryShellProvider, InMemoryAgentExecutor, InMemoryCheckpointProvider } from "@f0rbit/runbook/test";
+import { createEngine } from "@f0rbit/runbook-server";
+import { ok } from "@f0rbit/corpus";
+
+const engine = createEngine({
+  providers: {
+    shell: new InMemoryShellProvider({
+      "bun test": ok({ stdout: "pass", stderr: "", exit_code: 0 }),
+    }),
+    agent: new InMemoryAgentExecutor({
+      responses: {
+        review: ok({ text: '{"approved":true}', metadata: {} }),
+      },
+    }),
+    checkpoint: new InMemoryCheckpointProvider({
+      approve: ok({ approved: true }),
+    }),
+  },
+});
+
+const result = await engine.run(workflow, input);
+```
+
+No mocking — the Provider pattern replaces all external dependencies with real implementations that happen to run in-memory.
+
+---
+
+## Steps (concepts/steps.mdx)
+
+# Steps
+
+Steps are the building blocks of workflows. Each step has a Zod input schema, a Zod output schema, and a typed execution function. The engine validates data at every boundary — if a schema doesn't match, you get a typed error, not a runtime crash.
+
+There are four step types, each designed for a different kind of work:
+
+| Step | Purpose |
+|------|---------|
+| `fn()` | Pure function — arbitrary TypeScript logic |
+| `shell()` | Shell command — spawns a process |
+| `agent()` | AI agent — dispatches to an LLM executor |
+| `checkpoint()` | Human approval — pauses for user input |
+
+All step builders are imported from `@f0rbit/runbook`.
+
+---
+
+## fn() — Pure function step
+
+Execute arbitrary TypeScript logic. This is the escape hatch for all control flow not expressible in the pipeline builder — dynamic parallelism, conditional routing, retry loops, and multi-turn sessions via `ctx.engine`.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Unique step identifier |
+| `input` | `z.ZodType<I>` | Yes | Zod schema for input validation |
+| `output` | `z.ZodType<O>` | Yes | Zod schema for output validation |
+| `description` | `string` | No | Human-readable description |
+| `run` | `(input: I, ctx: StepContext) => Promise<Result<O, StepError>>` | Yes | Execution function |
+
+### StepContext
+
+The `run` function receives a `StepContext` with:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workflow_id` | `string` | ID of the running workflow |
+| `step_id` | `string` | ID of this step |
+| `run_id` | `string` | Unique execution ID |
+| `trace` | `TraceEmitter` | Emit custom trace events |
+| `signal` | `AbortSignal` | Cancellation signal |
+| `engine` | `EngineHandle` | Run sub-workflows with inherited providers |
+| `working_directory` | `string` | Resolved working directory |
+
+### Return type
+
+The `run` function returns `Result<O, StepError>` from `@f0rbit/corpus`. Use `ok()` for success, `err()` for failure. Never throw — errors are values.
+
+### Example
+
+```typescript
+import { fn } from "@f0rbit/runbook";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const transform = fn({
+  id: "transform",
+  input: z.object({ text: z.string() }),
+  output: z.object({ words: z.number() }),
+  run: async (input) => ok({ words: input.text.split(" ").length }),
+});
+```
+
+### Running sub-workflows
+
+Use `ctx.engine` to run sub-workflows with inherited providers:
+
+```typescript
+const orchestrator = fn({
+  id: "orchestrator",
+  input: z.object({ files: z.array(z.string()) }),
+  output: z.object({ results: z.array(z.string()) }),
+  run: async (input, ctx) => {
+    const results = [];
+    for (const file of input.files) {
+      const result = await ctx.engine.run(process_workflow, { file });
+      if (!result.ok) return result;
+      results.push(result.value.output);
+    }
+    return ok({ results });
+  },
+});
+```
+
+---
+
+## shell() — Shell command step
+
+Spawn a shell process and parse its output. Dispatches to a `ShellProvider` — `BunShellProvider` in production, `InMemoryShellProvider` in tests.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Unique step identifier |
+| `input` | `z.ZodType<I>` | Yes | Zod schema for input validation |
+| `output` | `z.ZodType<O>` | Yes | Zod schema for output validation |
+| `description` | `string` | No | Human-readable description |
+| `command` | `(input: I) => string` | Yes | Generates the shell command from validated input |
+| `parse` | `(stdout: string, code: number) => Result<O, StepError>` | Yes | Parses shell output into typed result |
+
+### Example
+
+```typescript
+import { shell } from "@f0rbit/runbook";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const lint = shell({
+  id: "lint",
+  input: z.object({ path: z.string() }),
+  output: z.object({ clean: z.boolean(), output: z.string() }),
+  command: (input) => `eslint ${input.path} --format json`,
+  parse: (stdout, code) => ok({ clean: code === 0, output: stdout }),
+});
+```
+
+The `command` function receives the validated input and returns a shell command string. The `parse` function receives stdout and the exit code, and returns a `Result` with the parsed output.
+
+### Working directory
+
+Shell commands execute in the `working_directory` configured on the engine. This is set via `RunbookConfig.working_directory` and propagated through the engine to the shell provider's `opts.cwd`.
+
+---
+
+## agent() — AI agent step
+
+Dispatch work to an AI coding agent. The agent receives a prompt, executes with tools, and returns typed output validated against the step's Zod schema.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Unique step identifier |
+| `input` | `z.ZodType<I>` | Yes | Zod schema for input validation |
+| `output` | `z.ZodType<O>` | Yes | Zod schema for output validation |
+| `description` | `string` | No | Human-readable description |
+| `prompt` | `(input: I) => string` | Yes | Generates the agent prompt from validated input |
+| `mode` | `AgentOutputMode` | No | `"analyze"` (default) or `"build"` |
+| `agent_opts` | `AgentStepOpts` | No | Additional agent configuration |
+
+### AgentStepOpts
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | `{ provider_id: string; model_id: string }` | Model selection |
+| `agent_type` | `string` | Freeform string — not limited to preset values |
+| `timeout_ms` | `number` | Execution timeout |
+| `system_prompt` | `string` | Inline system prompt |
+| `system_prompt_file` | `string` | Path to markdown file loaded at execution time |
+| `permissions` | `AgentPermission[]` | Agent permissions |
+
+### Output modes
+
+Agent steps have two output modes that control how the output is extracted:
+
+**`"analyze"` (default)** — The agent returns JSON matching the output schema directly in its response. Use for analysis, review, planning, and any task where the output is structured data.
+
+**`"build"`** — Output is extracted from session metadata such as files changed. Use for code generation tasks where the agent's work product is code, not a JSON response.
+
+Agent output is validated against the step's Zod output schema regardless of mode. Validation failures produce typed errors.
+
+### System prompts
+
+System prompts can be provided inline, from a file, or both:
+
+- `system_prompt` — inline string
+- `system_prompt_file` — path to a markdown file, loaded at execution time
+
+When both are provided, the file content is prepended to the inline prompt. Absolute paths are used as-is; relative paths are resolved against `engine_opts.working_directory`.
+
+### Example
+
+```typescript
+import { agent } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const review = agent({
+  id: "review",
+  input: z.object({ diff: z.string() }),
+  output: z.object({
+    approved: z.boolean(),
+    comments: z.array(z.string()),
+  }),
+  prompt: (input) => `Review this diff:\n${input.diff}`,
+  mode: "analyze",
+});
+```
+
+### Agent with options
+
+```typescript
+const coder = agent({
+  id: "implement",
+  input: z.object({ task: z.string() }),
+  output: z.object({ files_changed: z.array(z.string()) }),
+  prompt: (input) => input.task,
+  mode: "build",
+  agent_opts: {
+    agent_type: "coder",
+    system_prompt_file: "./prompts/coder.md",
+    timeout_ms: 300_000,
+  },
+});
+```
+
+---
+
+## checkpoint() — Human approval step
+
+Pause the workflow and wait for human input. The engine suspends execution, the server exposes a POST endpoint for the response, and the CLI prompts stdin.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Unique step identifier |
+| `input` | `z.ZodType<I>` | Yes | Zod schema for input validation |
+| `output` | `z.ZodType<O>` | Yes | Zod schema for output validation (what the human provides) |
+| `description` | `string` | No | Human-readable description |
+| `prompt` | `(input: I) => string` | Yes | Generates the prompt shown to the human |
+
+### Flow
+
+1. Engine reaches the checkpoint step and pauses execution
+2. Server exposes a POST endpoint for the checkpoint
+3. CLI displays the prompt and waits for user input via stdin
+4. User input is validated against the output schema
+5. On valid input, execution resumes with the checkpoint output as the step result
+
+### Example
+
+```typescript
+import { checkpoint } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const approve = checkpoint({
+  id: "approve",
+  input: z.object({ summary: z.string() }),
+  output: z.object({ approved: z.boolean() }),
+  prompt: (input) => `Review and approve:\n${input.summary}`,
+});
+```
+
+### Use with pipe()
+
+Checkpoints are wired into workflows like any other step:
+
+```typescript
+const workflow = defineWorkflow(z.object({ plan: z.string() }))
+  .pipe(generate_step, (wf) => ({ task: wf.plan }))
+  .pipe(approve, (_wf, prev) => ({ summary: JSON.stringify(prev) }))
+  .pipe(execute_step, (_wf, prev) => ({ approved: prev.approved }))
+  .done("guarded-pipeline", OutputSchema);
+```
+
+The checkpoint output replaces the previous step output in the pipeline. If you need to carry data forward across a checkpoint boundary, use a module-level closure or a `fn()` step to capture it.
+
+---
+
+## Traces (concepts/traces.mdx)
+
+# Traces
+
+Every workflow execution produces a typed event stream. Traces are not string logs — they are structured `TraceEvent` objects that can be queried, diffed, stored, and replayed.
+
+## Trace
+
+The top-level trace object captures a complete workflow execution:
+
+```typescript
+type Trace = {
+  run_id: string;
+  workflow_id: string;
+  events: TraceEvent[];
+  status: "success" | "failure";
+  duration_ms: number;
+};
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run_id` | `string` | Unique execution identifier |
+| `workflow_id` | `string` | ID of the workflow that was executed |
+| `events` | `TraceEvent[]` | Ordered list of all events |
+| `status` | `"success" \| "failure"` | Final execution status |
+| `duration_ms` | `number` | Total wall-clock execution time |
+
+---
+
+## TraceEvent types
+
+The `TraceEvent` type is a discriminated union of 14 event types, grouped by scope.
+
+### Workflow events
+
+Events that mark the lifecycle of the entire workflow.
+
+#### workflow_start
+
+Emitted when a workflow begins execution.
+
+```typescript
+{
+  type: "workflow_start";
+  workflow_id: string;
+  run_id: string;
+  input: unknown;
+  timestamp: number;
+}
+```
+
+#### workflow_complete
+
+Emitted when a workflow finishes successfully.
+
+```typescript
+{
+  type: "workflow_complete";
+  output: unknown;
+  duration_ms: number;
+  timestamp: number;
+}
+```
+
+#### workflow_error
+
+Emitted when a workflow fails.
+
+```typescript
+{
+  type: "workflow_error";
+  error: unknown;
+  duration_ms: number;
+  timestamp: number;
+}
+```
+
+### Step events
+
+Events that mark the lifecycle of individual steps within a workflow.
+
+#### step_start
+
+Emitted when a step begins execution.
+
+```typescript
+{
+  type: "step_start";
+  step_id: string;
+  input: unknown;
+  timestamp: number;
+}
+```
+
+#### step_complete
+
+Emitted when a step finishes successfully.
+
+```typescript
+{
+  type: "step_complete";
+  step_id: string;
+  output: unknown;
+  duration_ms: number;
+  timestamp: number;
+}
+```
+
+#### step_error
+
+Emitted when a step fails.
+
+```typescript
+{
+  type: "step_error";
+  step_id: string;
+  error: unknown;
+  duration_ms: number;
+  timestamp: number;
+}
+```
+
+#### step_skipped
+
+Emitted when a step is skipped.
+
+```typescript
+{
+  type: "step_skipped";
+  step_id: string;
+  reason: string;
+  timestamp: number;
+}
+```
+
+### Agent events
+
+Events that capture AI agent interactions within agent steps.
+
+#### agent_session_created
+
+Emitted when an agent session is created.
+
+```typescript
+{
+  type: "agent_session_created";
+  step_id: string;
+  session_id: string;
+  timestamp: number;
+}
+```
+
+#### agent_prompt_sent
+
+Emitted when a prompt is sent to an agent.
+
+```typescript
+{
+  type: "agent_prompt_sent";
+  step_id: string;
+  session_id: string;
+  prompt: string;
+  timestamp: number;
+}
+```
+
+#### agent_tool_call
+
+Emitted when an agent invokes a tool.
+
+```typescript
+{
+  type: "agent_tool_call";
+  step_id: string;
+  session_id: string;
+  tool: string;
+  args: unknown;
+  timestamp: number;
+}
+```
+
+#### agent_tool_result
+
+Emitted when a tool returns a result to the agent.
+
+```typescript
+{
+  type: "agent_tool_result";
+  step_id: string;
+  session_id: string;
+  tool: string;
+  result: unknown;
+  timestamp: number;
+}
+```
+
+#### agent_response
+
+Emitted when an agent completes its response.
+
+```typescript
+{
+  type: "agent_response";
+  step_id: string;
+  session_id: string;
+  response: unknown;
+  timestamp: number;
+}
+```
+
+### Checkpoint events
+
+Events that capture human-in-the-loop interactions.
+
+#### checkpoint_waiting
+
+Emitted when a checkpoint step pauses the workflow and waits for human input.
+
+```typescript
+{
+  type: "checkpoint_waiting";
+  step_id: string;
+  checkpoint_id: string;
+  prompt: string;
+  timestamp: number;
+}
+```
+
+#### checkpoint_resolved
+
+Emitted when a human provides input and the checkpoint resumes.
+
+```typescript
+{
+  type: "checkpoint_resolved";
+  step_id: string;
+  checkpoint_id: string;
+  input: unknown;
+  timestamp: number;
+}
+```
+
+---
+
+## TraceCollector
+
+Collects trace events during execution and builds the final `Trace` object.
+
+```typescript
+class TraceCollector implements TraceEmitter {
+  events: TraceEvent[];
+
+  emit(event: TraceEvent): void;
+  onEvent(listener: (event: TraceEvent) => void): void;
+  toTrace(run_id: string, workflow_id: string, status: "success" | "failure", duration_ms: number): Trace;
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `emit(event)` | Add a trace event to the collector |
+| `onEvent(listener)` | Register a listener for real-time event streaming |
+| `toTrace(...)` | Build the final `Trace` object from collected events |
+
+The collector is created internally by the engine. You don't typically create one directly unless building custom tooling.
+
+---
+
+## TraceEmitter
+
+The interface available to `fn()` steps via `ctx.trace`:
+
+```typescript
+type TraceEmitter = {
+  emit: (event: TraceEvent) => void;
+};
+```
+
+Use this to emit custom events from within `fn()` steps:
+
+```typescript
+const my_step = fn({
+  id: "my-step",
+  input: z.object({ data: z.string() }),
+  output: z.object({ result: z.string() }),
+  run: async (input, ctx) => {
+    ctx.trace.emit({
+      type: "step_start",
+      step_id: "sub-operation",
+      input: { detail: "starting sub-operation" },
+      timestamp: Date.now(),
+    });
+
+    // ... do work ...
+
+    return ok({ result: "done" });
+  },
+});
+```
+
+---
+
+## Viewing traces
+
+### CLI
+
+Use `runbook trace <run-id>` to display a trace from the terminal:
+
+```bash
+runbook trace abc-123
+```
+
+### Storage
+
+Traces are stored as `trace.json` in the git artifact store under `refs/runbook/runs/<run-id>`. This keeps traces invisible to `git log` but accessible via the CLI and programmatic APIs.
+
+### Programmatic access
+
+After running a workflow, the trace is available on the result:
+
+```typescript
+const result = await engine.run(workflow, input);
+if (result.ok) {
+  const trace = result.value.trace;
+  console.log(`${trace.events.length} events in ${trace.duration_ms}ms`);
+
+  // Filter for step events only
+  const step_events = trace.events.filter((e) =>
+    e.type.startsWith("step_")
+  );
+
+  // Find errors
+  const errors = trace.events.filter((e) =>
+    e.type === "step_error" || e.type === "workflow_error"
+  );
+}
+```
+
+---
+
+## Workflows (concepts/workflows.mdx)
+
+# Workflows
+
+Workflows are typed pipelines that chain steps together. Data flows through the pipeline with full type safety — mis-wired connections fail at compile time, not runtime.
+
+## defineWorkflow()
+
+Creates a new workflow builder. Takes a Zod schema that defines the workflow's input type.
+
+```typescript
+function defineWorkflow<WI>(input: z.ZodType<WI>): WorkflowBuilder<WI, WI>
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `input` | `z.ZodType<WI>` | Zod schema for the workflow's input |
+
+**Returns:** A `WorkflowBuilder<WI, WI>` where both type parameters start as the workflow input type.
+
+```typescript
+import { defineWorkflow } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const builder = defineWorkflow(z.object({ url: z.string() }));
+```
+
+---
+
+## WorkflowBuilder methods
+
+### pipe()
+
+Add a step to the pipeline with a mapper function that wires the data flow.
+
+```typescript
+pipe<I, O>(
+  step: Step<I, O>,
+  mapper: (workflow_input: WI, previous_output: LastO) => I
+): WorkflowBuilder<WI, O>
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `step` | `Step<I, O>` | The step to add |
+| `mapper` | `(workflow_input: WI, previous_output: LastO) => I` | Maps available data to the step's input |
+
+The mapper function receives two arguments:
+
+1. **`workflow_input`** — the original workflow input, always available
+2. **`previous_output`** — the output of the previous step in the pipeline
+
+For the first `pipe()` call, `previous_output` is the workflow input itself (since there's no prior step).
+
+```typescript
+const workflow = defineWorkflow(z.object({ url: z.string() }))
+  .pipe(fetch_step, (wf_input) => ({ url: wf_input.url }))
+  .pipe(parse_step, (_wf_input, prev) => ({ html: prev.body }))
+  .pipe(summarize_step, (_wf_input, prev) => ({ text: prev.content }))
+  .done("scrape-pipeline", SummarySchema);
+```
+
+Each `pipe()` call returns a new builder with updated type parameters — the output type tracks through the chain, so every mapper is fully typed.
+
+### parallel()
+
+Fan-out to multiple steps simultaneously, then fan-in with a tuple of all outputs.
+
+```typescript
+parallel<T extends readonly ParallelStepDef[]>(
+  ...defs: T
+): WorkflowBuilder<WI, ParallelOutputTuple<T>>
+```
+
+Each definition is a `[step, mapper]` tuple. All steps execute concurrently, and the result is a typed tuple matching the order of the definitions.
+
+```typescript
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .parallel(
+    [lint_step, (wf) => ({ path: wf.code })],
+    [test_step, (wf) => ({ path: wf.code })],
+    [typecheck_step, (wf) => ({ path: wf.code })],
+  )
+  .pipe(merge_step, (_wf, [lint, test, types]) => ({
+    lint_ok: lint.clean,
+    tests_pass: test.passed,
+    types_ok: types.clean,
+  }))
+  .done("ci-pipeline", MergedResultSchema);
+```
+
+The tuple type is preserved — `[lint, test, types]` destructures with full type information for each parallel step's output.
+
+### done()
+
+Finalize the workflow with an ID and output schema.
+
+```typescript
+done(id: string, output: z.ZodType<LastO>): Workflow<WI, LastO>
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Unique workflow identifier |
+| `output` | `z.ZodType<LastO>` | Zod schema matching the last step's output type |
+
+**Returns:** A `Workflow<WI, LastO>` object ready to be executed by the engine or composed into other workflows.
+
+```typescript
+const workflow = defineWorkflow(z.object({ name: z.string() }))
+  .pipe(greet_step, (wf) => ({ name: wf.name }))
+  .done("hello-world", z.object({ greeting: z.string() }));
+```
+
+---
+
+## Sub-workflows with asStep()
+
+Any workflow can be wrapped as a step for composition in another workflow.
+
+```typescript
+workflow.asStep(): Step<WI, LastO>
+```
+
+**Returns:** A `Step<WI, LastO>` that can be used in `pipe()` or `parallel()` calls. When executed, the sub-workflow runs through the engine with inherited providers.
+
+```typescript
+const inner = defineWorkflow(z.object({ file: z.string() }))
+  .pipe(read_step, (wf) => ({ path: wf.file }))
+  .pipe(process_step, (_wf, prev) => ({ content: prev.text }))
+  .done("inner-wf", OutputSchema);
+
+const outer = defineWorkflow(z.object({ files: z.array(z.string()) }))
+  .pipe(inner.asStep(), (wf) => ({ file: wf.files[0] }))
+  .done("outer-wf", OutputSchema);
+```
+
+Sub-workflows inherit the parent engine's providers via `ctx.engine.run()`. Do not create a new engine inside `fn()` steps — use the inherited one.
+
+---
+
+## Type safety
+
+The workflow builder tracks types through every step. Mis-wired pipelines fail at compile time:
+
+```typescript
+const step_a = fn({
+  id: "a",
+  input: z.object({ url: z.string() }),
+  output: z.object({ result: z.string() }),
+  run: async (input) => ok({ result: "done" }),
+});
+
+const step_b = fn({
+  id: "b",
+  input: z.object({ files: z.array(z.string()) }),
+  output: z.object({ count: z.number() }),
+  run: async (input) => ok({ count: input.files.length }),
+});
+
+defineWorkflow(z.object({ url: z.string() }))
+  .pipe(step_a, (wf) => ({ url: wf.url }))
+  .pipe(step_b, (_wf, prev) => ({ files: prev.files }));
+  //                                       ^^^^^ TypeScript error:
+  //                     Property 'files' does not exist on type '{ result: string }'
+```
+
+This ensures:
+
+- Every mapper returns the correct shape for the next step's input schema
+- The workflow input type is available throughout the chain
+- Parallel step outputs are correctly typed as a tuple
+- Sub-workflow types compose correctly through `asStep()`
+
+---
+
+## Execution
+
+Workflows are executed by the engine:
+
+```typescript
+import { createEngine } from "@f0rbit/runbook-server";
+
+const engine = createEngine({
+  providers: { shell: new BunShellProvider() },
+});
+
+const result = await engine.run(workflow, { url: "https://example.com" });
+
+if (result.ok) {
+  console.log(result.value.output);      // Fully typed workflow output
+  console.log(result.value.trace);       // Typed event stream
+  console.log(result.value.duration_ms); // Execution time
+} else {
+  console.error(result.error);           // Typed WorkflowError
+}
+```
+
+Results use `Result<T, E>` from `@f0rbit/corpus`. No exceptions — errors are values.
+
+---
+
+## Agent Steps (guides/agent-steps.mdx)
+
+## Overview
+
+Agent steps dispatch work to an `AgentExecutor` — an abstraction over LLM-powered agents like Claude Code. The engine manages the full session lifecycle: creation, prompting, output extraction, validation, and teardown.
+
+```typescript
+import { agent } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: z.object({
+    issues: z.array(z.string()),
+    severity: z.enum(["low", "medium", "high"]),
+  }),
+  prompt: (input) => `Analyze this code for issues:\n${input.code}`,
+});
+```
+
+## Output Modes
+
+Two modes control how the engine extracts output from agent responses.
+
+### Analyze Mode (default)
+
+The agent returns JSON matching the output schema. Used for analysis, review, and planning tasks.
+
+The engine:
+1. Takes the agent's text response
+2. Parses it as JSON
+3. Validates against the step's Zod output schema
+
+```typescript
+const review = agent({
+  id: "review",
+  input: z.object({ pr_diff: z.string() }),
+  output: z.object({
+    approved: z.boolean(),
+    comments: z.array(z.string()),
+  }),
+  prompt: (input) => `Review this PR:\n${input.pr_diff}`,
+  // analyze mode is the default — no need to specify
+});
+```
+
+The agent must respond with valid JSON. If parsing or validation fails, the engine returns an `agent_parse_error`.
+
+### Build Mode
+
+Output is derived from session metadata (`files_changed`, `tool_calls`, etc.) rather than the agent's text response. Used for code generation and refactoring tasks.
+
+```typescript
+const implement = agent({
+  id: "implement",
+  input: z.object({ spec: z.string() }),
+  output: z.object({
+    files_changed: z.array(z.string()),
+  }),
+  prompt: (input) => `Implement: ${input.spec}`,
+  agent_opts: {
+    output_mode: "build",
+  },
+});
+```
+
+The engine extracts structured data from the `AgentResponse.metadata` rather than parsing the text.
+
+## System Prompts
+
+### Inline System Prompt
+
+```typescript
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: AnalysisSchema,
+  prompt: (input) => `Analyze: ${input.code}`,
+  agent_opts: {
+    system_prompt: "You are a code review expert. Return JSON only.",
+  },
+});
+```
+
+### system_prompt_file
+
+Load system prompts from markdown files at execution time:
+
+```typescript
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: AnalysisSchema,
+  prompt: (input) => `Analyze: ${input.code}`,
+  agent_opts: {
+    system_prompt_file: "./prompts/analyzer.md",
+  },
+});
+```
+
+**Path resolution:**
+- Absolute paths are used as-is
+- Relative paths resolve against `engine_opts.working_directory`
+
+**Combining sources:** When both `system_prompt_file` and `system_prompt` are set, the file content is prepended to the inline prompt. This lets you keep reusable instructions in a file and add step-specific context inline.
+
+```typescript
+agent_opts: {
+  system_prompt_file: "./prompts/base.md",   // loaded first
+  system_prompt: "Focus on security issues.", // appended after
+}
+```
+
+## Agent Type
+
+The `agent_type` field is a freeform `string` — not limited to preset values. Different agent types can map to different executor behaviors.
+
+```typescript
+agent_opts: {
+  agent_type: "explorer",  // or "coder", "planner", or any custom string
+}
+```
+
+The executor implementation decides what `agent_type` means. For example, a Claude Code executor might configure different permissions or tool sets based on the type.
+
+## AgentExecutor Interface
+
+The `AgentExecutor` is the abstraction that agent steps dispatch to:
+
+```typescript
+type AgentExecutor = {
+  createSession: (
+    opts: CreateSessionOpts,
+  ) => Promise<Result<AgentSession, AgentError>>;
+
+  prompt: (
+    session_id: string,
+    opts: PromptOpts,
+  ) => Promise<Result<AgentResponse, AgentError>>;
+
+  subscribe?: (
+    session_id: string,
+    handler: (event: AgentEvent) => void,
+  ) => () => void;
+
+  destroySession?: (
+    session_id: string,
+  ) => Promise<Result<void, AgentError>>;
+
+  healthCheck?: () => Promise<Result<void, AgentError>>;
+};
+```
+
+Only `createSession` and `prompt` are required. `subscribe`, `destroySession`, and `healthCheck` are optional capabilities.
+
+## Session Lifecycle
+
+The engine manages the full lifecycle for each agent step:
+
+1. **Create** — Engine calls `createSession()` with working directory, system prompt, and permissions
+2. **Prompt** — Engine calls `prompt()` with the generated prompt text (from the step's `prompt` function)
+3. **Execute** — Agent processes the prompt, makes tool calls, generates a response
+4. **Receive** — Engine gets an `AgentResponse` with text and metadata
+5. **Extract** — Engine extracts output based on mode (analyze: parse text as JSON, build: from metadata)
+6. **Validate** — Engine validates output against the step's Zod output schema
+7. **Destroy** — Engine optionally calls `destroySession()`
+
+## AgentResponse Structure
+
+```typescript
+type AgentResponse = {
+  session_id: string;
+  text: string;
+  metadata: {
+    files_changed?: string[];
+    tool_calls?: AgentToolCall[];
+    tokens_used?: { input: number; output: number };
+    duration_ms: number;
+  };
+};
+```
+
+In **analyze mode**, the engine uses `text`. In **build mode**, the engine uses `metadata`.
+
+## Permissions
+
+Control what the agent can do during execution:
+
+```typescript
+type AgentPermission = {
+  permission: string;
+  pattern: string;
+  action: "allow" | "deny" | "ask";
+};
+```
+
+Permissions are passed to `createSession` and enforced by the executor implementation. For example:
+
+```typescript
+agent_opts: {
+  permissions: [
+    { permission: "file:read", pattern: "src/**", action: "allow" },
+    { permission: "file:write", pattern: "src/**", action: "allow" },
+    { permission: "file:write", pattern: ".env*", action: "deny" },
+    { permission: "shell:exec", pattern: "*", action: "ask" },
+  ],
+}
+```
+
+## Error Handling
+
+Agent errors are typed as a discriminated union:
+
+```typescript
+type AgentError =
+  | { kind: "connection_failed"; cause: string }
+  | { kind: "session_failed"; cause: string }
+  | { kind: "prompt_failed"; session_id: string; cause: string }
+  | { kind: "timeout"; session_id: string; timeout_ms: number };
+```
+
+If agent output fails Zod validation, the engine returns a parse error:
+
+```typescript
+{ kind: "agent_parse_error"; step_id: string; raw_output: string; issues: ZodIssue[] }
+```
+
+All errors are returned as `Result<T, AgentError>` values — never thrown. This integrates cleanly with the `@f0rbit/corpus` pipe chains used throughout the engine.
+
+## Using Agent Steps in Workflows
+
+Agent steps compose with other step types in the workflow pipeline:
+
+```typescript
+import { defineWorkflow, agent, fn, shell } from "@f0rbit/runbook";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const explore = agent({
+  id: "explore",
+  input: z.object({ query: z.string() }),
+  output: z.object({ files: z.array(z.string()) }),
+  prompt: (input) => `Find files related to: ${input.query}`,
+  agent_opts: { agent_type: "explorer" },
+});
+
+const implement = agent({
+  id: "implement",
+  input: z.object({ spec: z.string(), files: z.array(z.string()) }),
+  output: z.object({ files_changed: z.array(z.string()) }),
+  prompt: (input) =>
+    `Implement ${input.spec}. Relevant files: ${input.files.join(", ")}`,
+  agent_opts: {
+    agent_type: "coder",
+    output_mode: "build",
+    system_prompt_file: "./prompts/coder.md",
+  },
+});
+
+const workflow = defineWorkflow(z.object({ spec: z.string() }))
+  .pipe(explore, (wf) => ({ query: wf.spec }))
+  .pipe(implement, (wf, prev) => ({
+    spec: wf.spec,
+    files: prev.files,
+  }))
+  .done("implement-feature", z.object({ files_changed: z.array(z.string()) }));
+```
+
+The `pipe()` mapper receives `(workflow_input, previous_step_output)` — both fully typed from their respective Zod schemas.
+
+---
+
+## Configuration (guides/config-files.mdx)
+
+## Config File Structure
+
+Create `runbook.config.ts` in your project root:
+
+```typescript
+import {
+  defineConfig,
+  defineWorkflow,
+  fn,
+  agent,
+  shell,
+  checkpoint,
+} from "@f0rbit/runbook";
+import { z } from "zod";
+import { ok } from "@f0rbit/corpus";
+
+const hello = fn({
+  id: "hello",
+  input: z.object({ name: z.string() }),
+  output: z.object({ greeting: z.string() }),
+  run: async (input) => ok({ greeting: `Hello, ${input.name}!` }),
+});
+
+const workflow = defineWorkflow(z.object({ name: z.string() }))
+  .pipe(hello, (wf) => ({ name: wf.name }))
+  .done("hello-world", z.object({ greeting: z.string() }));
+
+export default defineConfig({
+  workflows: [workflow],
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  artifacts: { git: true },
+});
+```
+
+## defineConfig Fields
+
+### workflows
+
+Array of workflows that the server should register and make available:
+
+```typescript
+{
+  workflows: Workflow<any, any>[];
+}
+```
+
+### server
+
+```typescript
+{
+  server?: {
+    port?: number;  // default: 4400
+  };
+}
+```
+
+### providers
+
+Configure the real providers used at runtime:
+
+```typescript
+{
+  providers?: {
+    agent?: {
+      type: string;          // e.g. "opencode"
+      base_url?: string;     // agent executor URL
+      auto_approve?: boolean;
+    };
+  };
+}
+```
+
+The `resolveProviders(config)` function in the server package creates real providers from this config. It always creates a `BunShellProvider` for shell steps and creates the appropriate agent executor based on `agent.type`.
+
+### artifacts
+
+```typescript
+{
+  artifacts?: {
+    git?: boolean;  // enable git artifact store
+  };
+}
+```
+
+When enabled, every workflow run is automatically stored as git objects under `refs/runbook/runs/`. See the [Git Artifact Store](/guides/git-artifact-store) guide.
+
+### working_directory
+
+Optional string that propagates through the entire system:
+
+```typescript
+{
+  working_directory?: string;
+}
+```
+
+## Config Discovery
+
+The CLI and server find your config file using this priority order (first match wins):
+
+1. **`--config <path>` flag** — Explicit path to a config file
+2. **`runbook.config.ts` in cwd** — Project-local config
+3. **Walk up parent directories** — Find the nearest `runbook.config.ts`
+4. **`~/.config/runbook/runbook.config.ts`** — Global fallback
+
+Local configs always take precedence over global. The global fallback enables user-wide workflow definitions separate from project configs.
+
+```bash
+# Use explicit config
+runbook run my-workflow --config ./custom.config.ts
+
+# Uses runbook.config.ts from cwd or parent directories
+runbook run my-workflow
+
+# Falls back to ~/.config/runbook/runbook.config.ts if no local config found
+runbook run my-workflow
+```
+
+## Global Config
+
+Store personal workflows at `~/.config/runbook/runbook.config.ts` for workflows available everywhere:
+
+```typescript
+import {
+  defineConfig,
+  defineWorkflow,
+  agent,
+  shell,
+  fn,
+  checkpoint,
+} from "@f0rbit/runbook";
+import { z } from "zod";
+import { ok } from "@f0rbit/corpus";
+
+const question = defineWorkflow(z.object({ question: z.string() }))
+  .pipe(explore_step, (wf) => ({ query: wf.question }))
+  .done("question", AnswerSchema);
+
+export default defineConfig({
+  workflows: [question],
+  providers: {
+    agent: { type: "opencode" },
+  },
+});
+```
+
+## Workflow Patterns
+
+The config file is where you define your actual workflows. Common patterns:
+
+| Pattern | Description |
+|---------|-------------|
+| `verify` | Parallel shell steps (tsc + bun test + biome) merged with a fn step |
+| `question` | Single explore agent step in analyze mode |
+| `simple-change` | Coder agent (build mode) → verify sub-workflow → git commit |
+| `feature` | Explore → plan → checkpoint → dynamic phase execution |
+
+### Organizing Prompts and Schemas
+
+Agent system prompts and shared schemas can be stored alongside the config:
+
+```
+~/.config/runbook/
+  runbook.config.ts
+  prompts/
+    explorer.md
+    coder.md
+    planner.md
+  schemas/
+    common.ts
+```
+
+Reference prompts from agent steps using `system_prompt_file`:
+
+```typescript
+const explore = agent({
+  id: "explore",
+  input: ExploreInput,
+  output: ExploreOutput,
+  prompt: (input) => `Explore: ${input.query}`,
+  agent_opts: {
+    system_prompt_file: "./prompts/explorer.md",
+    agent_type: "explorer",
+  },
+});
+```
+
+Relative paths in `system_prompt_file` resolve against `working_directory`.
+
+## working_directory Propagation
+
+When set in config, `working_directory` flows through the entire system:
+
+```
+runbook.config.ts
+  └─ working_directory: "/path/to/project"
+       │
+       ├─ handleServe() reads it from config
+       │    └─ passes to createEngine()
+       │
+       ├─ Engine passes to shell steps as opts.cwd
+       │
+       ├─ Engine passes to agent createSession()
+       │    └─ agent works in the correct directory
+       │
+       └─ system_prompt_file relative paths
+            └─ resolve against working_directory
+```
+
+This ensures all steps — shell, agent, and fn — operate in the correct directory without each step needing to specify paths independently.
+
+```typescript
+export default defineConfig({
+  workflows: [workflow],
+  working_directory: "/path/to/project",
+  providers: {
+    agent: { type: "opencode" },
+  },
+});
+```
+
+---
+
+## Git Artifact Store (guides/git-artifact-store.mdx)
+
+## Overview
+
+The git artifact store persists workflow runs as git objects under `refs/runbook/runs/<run-id>`. These refs are **invisible to `git log`** — they live outside the normal commit graph and don't pollute your project history.
+
+Under the hood, it uses raw git commands (`git hash-object`, `git mktree`, `git update-ref`) to create content-addressed trees. No git library is required.
+
+```typescript
+import { createGitArtifactStore } from "@f0rbit/runbook-git-store";
+
+const store = createGitArtifactStore();
+```
+
+## Storage Layout
+
+Each run creates a tree under its ref:
+
+```
+refs/runbook/runs/<run-id>/
+  metadata.json      — workflow ID, input, output, timing, optional commit SHA
+  trace.json         — full typed event stream
+  steps/
+    <step-id>/
+      input.json     — step input
+      output.json    — step output
+      prompt.txt     — agent prompt (agent steps only)
+      response.json  — agent response (agent steps only)
+```
+
+Every file is a git blob, every directory is a git tree. The run ref points to the root tree object.
+
+## Storing Runs
+
+After running a workflow, store the result:
+
+```typescript
+import { createGitArtifactStore } from "@f0rbit/runbook-git-store";
+
+const store = createGitArtifactStore();
+
+const result = await store.store({
+  run_id: "run-123",
+  workflow_id: "code-review",
+  input: { code: "const x = 1;" },
+  output: { issues: [], severity: "low" },
+  trace: runResult.trace,
+  duration_ms: 1500,
+});
+```
+
+The store writes git objects and creates a ref at `refs/runbook/runs/run-123`.
+
+## Browsing Runs
+
+### CLI Commands
+
+```bash
+# List all stored runs
+runbook history
+
+# Show a specific run's metadata
+runbook show <run-id>
+
+# Show a specific step's artifacts
+runbook show <run-id> <step-id>
+
+# Diff two runs
+runbook diff <run-id-1> <run-id-2>
+```
+
+### Programmatic Access
+
+```typescript
+const runs = await store.list();
+const run = await store.get("run-123");
+const step = await store.getStep("run-123", "analyze");
+```
+
+## Push and Pull
+
+Artifact refs are pushable and pullable like any git ref. Share workflow runs with your team or archive them on a remote.
+
+### CLI
+
+```bash
+# Push artifact refs to remote
+runbook push
+runbook push --remote origin
+
+# Pull artifact refs from remote
+runbook pull
+runbook pull --remote origin
+```
+
+### Programmatic
+
+```typescript
+await store.push({ remote: "origin" });
+await store.pull({ remote: "origin" });
+```
+
+Under the hood, this runs:
+
+```bash
+# Push
+git push origin 'refs/runbook/runs/*:refs/runbook/runs/*'
+
+# Pull
+git fetch origin 'refs/runbook/runs/*:refs/runbook/runs/*'
+```
+
+## Linking to Commits
+
+Associate a run with a specific git commit SHA:
+
+```typescript
+await store.linkToCommit("run-123", "abc123def");
+```
+
+The commit SHA is stored in `metadata.json`. This enables tracing which workflow run produced or verified a given commit.
+
+## Why Git?
+
+**Content-addressed.** Every prompt, response, and tool call is hashed. Identical content produces identical blobs — no duplicated storage.
+
+**Invisible.** Refs under `refs/runbook/` don't appear in `git log`, `git branch`, or any standard git command. Your commit history stays clean.
+
+**Pushable.** Artifact refs can be pushed to and pulled from any git remote, independently of your branch refs. Share runs with teammates or archive them centrally.
+
+**Auditable.** Every agent interaction is recorded as a typed event stream. You can inspect exactly what prompt was sent, what the agent responded, and what tool calls it made.
+
+**Zero infrastructure.** No external storage service, no database, no S3 bucket. If you have a git repo, you have an artifact store.
+
+## Enabling in Config
+
+Enable the git artifact store in your `runbook.config.ts`:
+
+```typescript
+import { defineConfig } from "@f0rbit/runbook";
+
+export default defineConfig({
+  workflows: [/* ... */],
+  artifacts: { git: true },
+});
+```
+
+When enabled, the server automatically stores every workflow run after completion.
+
+---
+
+## Testing Workflows (guides/testing.mdx)
+
+## Philosophy
+
+Runbook tests follow a strict no-mocking philosophy. The **Provider pattern** replaces all external dependencies with in-memory implementations that run instantly and deterministically.
+
+- **No mocking** — in-memory fakes over jest.mock, vi.mock, or sinon
+- **Integration-first** — tests call SDK functions and server handlers directly, not the CLI binary
+- **Server API tests** use Hono `app.request()` — no real HTTP server needed
+- **`bun test` only** — no jest, no vitest
+
+## In-Memory Providers
+
+All test providers are available from the `@f0rbit/runbook/test` subpath export:
+
+```typescript
+import {
+  InMemoryShellProvider,
+  InMemoryAgentExecutor,
+  InMemoryCheckpointProvider,
+} from "@f0rbit/runbook/test";
+```
+
+Each provider exposes an `.on()` method to register scripted responses and tracking arrays to assert against after execution.
+
+### InMemoryShellProvider
+
+Replaces real shell execution with pattern-matched responses.
+
+```typescript
+class InMemoryShellProvider implements ShellProvider {
+  on(pattern: RegExp | string, result: Partial<ShellResult> & { stdout: string }): void;
+  executed: Array<{ command: string; opts?: ShellOpts }>;
+  exec_delay_ms: number;
+}
+```
+
+The `.on()` method registers a scripted response. When `exec()` is called, the first matching pattern wins.
+
+```typescript
+const shell = new InMemoryShellProvider();
+shell.on(/eslint/, { stdout: "[]", exit_code: 0 });
+shell.on(/tsc/, { stdout: "", exit_code: 0 });
+```
+
+After execution, inspect `shell.executed` to verify which commands ran:
+
+```typescript
+expect(shell.executed).toHaveLength(2);
+expect(shell.executed[0].command).toContain("eslint");
+```
+
+Set `exec_delay_ms` to simulate slow commands for timeout/abort testing.
+
+### InMemoryAgentExecutor
+
+Replaces real agent sessions with pattern-matched responses.
+
+```typescript
+class InMemoryAgentExecutor implements AgentExecutor {
+  on(pattern: RegExp | string, response: Partial<AgentResponse> & { text: string }): void;
+  created_sessions: Array<{ id: string; opts: CreateSessionOpts }>;
+  prompted: Array<{ session_id: string; opts: PromptOpts }>;
+  destroyed_sessions: string[];
+  prompt_delay_ms: number;
+}
+```
+
+The `.on()` method matches against the prompt text. `created_sessions` tracks session creation for assertions.
+
+```typescript
+const agent = new InMemoryAgentExecutor();
+agent.on(/Analyze/, { text: '{"issues": [], "severity": "low"}' });
+agent.on(/Review/, { text: '{"approved": true, "comments": []}' });
+```
+
+After execution, inspect session lifecycle:
+
+```typescript
+expect(agent.created_sessions).toHaveLength(1);
+expect(agent.prompted).toHaveLength(1);
+expect(agent.prompted[0].opts.text).toContain("Analyze");
+```
+
+### InMemoryCheckpointProvider
+
+Replaces interactive checkpoint prompts with scripted responses.
+
+```typescript
+class InMemoryCheckpointProvider implements CheckpointProvider {
+  on(pattern: RegExp | string, value: unknown): void;
+  prompted: Array<{ message: string }>;
+}
+```
+
+```typescript
+const cp = new InMemoryCheckpointProvider();
+cp.on(/approve/, { approved: true });
+```
+
+## Full Test Example
+
+A complete end-to-end test for a code review workflow:
+
+```typescript
+import { describe, expect, test } from "bun:test";
+import { agent, defineWorkflow, fn } from "@f0rbit/runbook";
+import {
+  InMemoryAgentExecutor,
+  InMemoryShellProvider,
+} from "@f0rbit/runbook/test";
+import { createEngine } from "@f0rbit/runbook-server";
+import { ok } from "@f0rbit/corpus";
+import { z } from "zod";
+
+const IssueSchema = z.object({
+  issues: z.array(z.string()),
+  severity: z.enum(["low", "medium", "high"]),
+});
+
+const analyze = agent({
+  id: "analyze",
+  input: z.object({ code: z.string() }),
+  output: IssueSchema,
+  prompt: (input) => `Analyze this code for issues:\n${input.code}`,
+});
+
+const workflow = defineWorkflow(z.object({ code: z.string() }))
+  .pipe(analyze, (wf_input) => ({ code: wf_input.code }))
+  .done("code-review", IssueSchema);
+
+describe("code review workflow", () => {
+  test("runs end to end", async () => {
+    const shell = new InMemoryShellProvider();
+    const agent_exec = new InMemoryAgentExecutor();
+    agent_exec.on(/Analyze/, {
+      text: '{"issues": [], "severity": "low"}',
+    });
+
+    const engine = createEngine({
+      providers: { shell, agent: agent_exec },
+    });
+    const result = await engine.run(workflow, { code: "const x = 1;" });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.output.severity).toBe("low");
+      expect(result.value.output.issues).toEqual([]);
+    }
+  });
+
+  test("tracks agent sessions", async () => {
+    const agent_exec = new InMemoryAgentExecutor();
+    agent_exec.on(/Analyze/, {
+      text: '{"issues": ["unused var"], "severity": "medium"}',
+    });
+
+    const engine = createEngine({ providers: { agent: agent_exec } });
+    await engine.run(workflow, { code: "const x = 1;" });
+
+    expect(agent_exec.created_sessions).toHaveLength(1);
+    expect(agent_exec.prompted).toHaveLength(1);
+    expect(agent_exec.prompted[0].opts.text).toContain("Analyze");
+  });
+});
+```
+
+## Testing Patterns
+
+### Assert on Provider State
+
+Every provider tracks its interactions. Use these for assertions instead of mocking return values:
+
+| Provider | Tracking Fields |
+|----------|----------------|
+| `InMemoryShellProvider` | `executed` |
+| `InMemoryAgentExecutor` | `created_sessions`, `prompted`, `destroyed_sessions` |
+| `InMemoryCheckpointProvider` | `prompted` |
+
+### Multiple Patterns
+
+For workflows with multiple steps, register a pattern for each:
+
+```typescript
+const agent_exec = new InMemoryAgentExecutor();
+agent_exec.on(/Explore/, { text: '{"files": ["src/main.ts"]}' });
+agent_exec.on(/Analyze/, { text: '{"issues": [], "severity": "low"}' });
+agent_exec.on(/Review/, { text: '{"approved": true}' });
+```
+
+### Test Error Paths
+
+Don't register a pattern to trigger a "no scripted response" error. This tests how your workflow handles agent or shell failures:
+
+```typescript
+test("handles missing agent response", async () => {
+  const agent_exec = new InMemoryAgentExecutor();
+  // no .on() registered — agent will error
+
+  const engine = createEngine({ providers: { agent: agent_exec } });
+  const result = await engine.run(workflow, { code: "const x = 1;" });
+
+  expect(result.ok).toBe(false);
+});
+```
+
+### Delay Simulation
+
+Set `exec_delay_ms` or `prompt_delay_ms` to test timeout and abort behavior:
+
+```typescript
+const agent_exec = new InMemoryAgentExecutor();
+agent_exec.prompt_delay_ms = 5000; // simulate a slow agent
+agent_exec.on(/Analyze/, { text: '{"issues": []}' });
+```
+
+### Server API Tests
+
+Use Hono's `app.request()` to test server routes without starting a real HTTP server:
+
+```typescript
+import { createApp } from "@f0rbit/runbook-server";
+
+test("POST /workflows/:id/run", async () => {
+  const app = createApp({ workflows: [workflow], providers });
+  const res = await app.request("/workflows/code-review/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "const x = 1;" }),
+  });
+
+  expect(res.status).toBe(200);
+});
+```
+
+---
+
+## @f0rbit/runbook-cli (packages/cli.mdx)
+
+The CLI package provides the `runbook` command. Published as `@f0rbit/runbook-cli` on npm.
+
+```bash
+bun add -g @f0rbit/runbook-cli
+```
+
+The CLI is a thin HTTP client — all workflow execution happens in the server process. It uses raw `process.argv` parsing with no CLI framework dependency.
+
+---
+
+## Global Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--url <url>` | Server URL | `http://localhost:4400` (env: `RUNBOOK_URL`) |
+| `--config <path>` | Config file path | Auto-discovered (see [Config Discovery](#config-discovery)) |
+| `--help` | Show help | — |
+
+---
+
+## Commands
+
+### `serve`
+
+Start the runbook server. Loads config, resolves providers, and starts the Hono HTTP server.
+
+```bash
+runbook serve
+runbook serve --config ./my-config.ts
+```
+
+The server binds to the port specified in your config (default `4400`). It registers all workflows defined in the config and creates the engine with resolved providers.
+
+---
+
+### `run`
+
+Submit a workflow run to the server.
+
+```bash
+runbook run <workflow> [task...] [--input <json>]
+```
+
+Positional `task` words are joined into a string and passed as `{ task: "..." }` input. Use `--input` for structured JSON input.
+
+```bash
+# Simple task string
+runbook run simple-change fix the login button
+
+# Structured JSON input
+runbook run code-review --input '{"code": "console.log(1)"}'
+```
+
+The command prints the `run_id` and begins streaming trace events until the run completes.
+
+---
+
+### `status`
+
+Get the current status of a run. Supports live streaming via SSE.
+
+```bash
+runbook status <run-id>
+runbook status <run-id> --live
+```
+
+| Flag | Description |
+|------|-------------|
+| `--live` | Stream trace events via SSE until the run completes |
+
+Without `--live`, prints a snapshot of the current run state (status, step progress, timing).
+
+---
+
+### `trace`
+
+Display the full typed event stream for a completed run.
+
+```bash
+runbook trace <run-id>
+```
+
+Prints all trace events with timestamps, step IDs, and event payloads. Trace events are typed (not string logs) — covering workflow lifecycle, step execution, agent interactions, and errors.
+
+---
+
+### `list`
+
+List all workflows registered in the loaded config.
+
+```bash
+runbook list
+```
+
+Displays workflow IDs, step counts, and input/output schema summaries.
+
+---
+
+### `history`
+
+List stored runs from the git artifact store.
+
+```bash
+runbook history
+```
+
+Reads from `refs/runbook/runs/` in the local git repository. Shows run ID, workflow, status, timestamp, and duration.
+
+---
+
+### `show`
+
+Show run or step artifacts from the git store.
+
+```bash
+# Show full run artifacts
+runbook show <run-id>
+
+# Show specific step artifacts
+runbook show <run-id> <step-id>
+```
+
+Displays metadata, trace summary, and step-level inputs/outputs. When a `step-id` is provided, shows that step's full artifacts including prompt and response data.
+
+---
+
+### `diff`
+
+Diff two stored runs side-by-side.
+
+```bash
+runbook diff <run-id-1> <run-id-2>
+```
+
+Compares metadata, timing, outputs, and step results between two runs. Useful for comparing before/after when iterating on workflows.
+
+---
+
+### `push`
+
+Push artifact refs to a remote.
+
+```bash
+runbook push
+runbook push --remote origin
+```
+
+| Flag | Description |
+|------|-------------|
+| `--remote <name>` | Git remote to push to (default: `origin`) |
+
+Pushes `refs/runbook/runs/*` to the remote so run artifacts are shared with the team.
+
+---
+
+### `pull`
+
+Pull artifact refs from a remote.
+
+```bash
+runbook pull
+runbook pull --remote origin
+```
+
+| Flag | Description |
+|------|-------------|
+| `--remote <name>` | Git remote to pull from (default: `origin`) |
+
+Fetches `refs/runbook/runs/*` from the remote into the local repository.
+
+---
+
+### `cancel`
+
+Cancel a running workflow.
+
+```bash
+runbook cancel <run-id>
+```
+
+Sends a cancellation request to the server. The engine aborts the current step and marks the run as cancelled.
+
+---
+
+## Config Discovery
+
+The CLI discovers configuration in this priority order:
+
+1. `--config <path>` flag (explicit path)
+2. Walk up from `cwd` looking for `runbook.config.ts`
+3. `~/.config/runbook/runbook.config.ts` (global fallback)
+
+The global fallback enables user-wide workflow definitions separate from project-specific configs. Local configs always take precedence.
+
+```typescript
+// runbook.config.ts
+import { defineConfig } from "@f0rbit/runbook";
+
+export default defineConfig({
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  workflows: [myWorkflow, anotherWorkflow],
+});
+```
+
+---
+
+## @f0rbit/runbook (packages/core.mdx)
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+The core SDK package. Published as `@f0rbit/runbook` on npm.
+
+```bash
+bun add @f0rbit/runbook
+```
+
+## Subpath Exports
+
+| Import Path | Contents |
+|-------------|----------|
+| `@f0rbit/runbook` | Schemas, step builders, types, workflow builder, trace collector, errors |
+| `@f0rbit/runbook/test` | In-memory test providers (`InMemoryShellProvider`, `InMemoryAgentExecutor`, `InMemoryCheckpointProvider`) |
+
+---
+
+## Schemas
+
+All schemas are [Zod](https://zod.dev) objects and serve as the source of truth for their corresponding TypeScript types.
+
+```typescript
+import { RunbookConfigSchema, TraceEventSchema } from "@f0rbit/runbook";
+```
+
+| Export | Description |
+|--------|-------------|
+| `AgentExecutorConfigSchema` | Agent executor configuration (`{ type: string }`) |
+| `AgentStepOptsSchema` | Agent step options — `model`, `agent_type`, `timeout_ms`, `system_prompt`, `system_prompt_file`, `permissions` |
+| `ArtifactsConfigSchema` | Artifacts config (`{ git?: boolean }`) |
+| `defineConfig` | Type-safe config helper (identity pass-through for editor autocomplete) |
+| `ProviderConfigSchema` | Provider configuration (shell, agent, checkpoint settings) |
+| `RunbookConfigSchema` | Full runbook config — `server`, `providers`, `artifacts`, `working_directory` |
+| `RunStateSchema` | Run state — `run_id`, `workflow_id`, `status`, `input`, `output`, `error`, timestamps |
+| `ServerConfigSchema` | Server config (`{ port?: number }`) |
+| `TraceEventSchema` | Discriminated union of 14 trace event types |
+| `TraceSchema` | Complete trace — `run_id`, `workflow_id`, `events`, `status`, `duration_ms` |
+| `WorkflowInfoSchema` | Workflow info — `id`, `input_schema`, `output_schema`, `step_count` |
+
+### `defineConfig`
+
+```typescript
+import { defineConfig } from "@f0rbit/runbook";
+
+export default defineConfig({
+  server: { port: 4400 },
+  providers: {
+    agent: { type: "opencode" },
+  },
+  working_directory: process.cwd(),
+});
+```
+
+---
+
+## Step Builders
+
+Step builders create typed `Step<I, O>` objects for use in workflow pipelines.
+
+```typescript
+import { fn, shell, agent, checkpoint } from "@f0rbit/runbook";
+```
+
+### `fn`
+
+Create a step backed by an arbitrary function.
+
+```typescript
+fn<I, O>(opts: {
+  id: string;
+  input: z.ZodType<I>;
+  output: z.ZodType<O>;
+  description?: string;
+  run: (input: I, ctx: StepContext) => Promise<O> | O;
+}) => Step<I, O>
+```
+
+The `ctx.engine` property allows fn steps to run sub-workflows with inherited providers — enabling dynamic parallelism, conditional routing, retry loops, and multi-turn sessions.
+
+### `shell`
+
+Create a step that runs a shell command.
+
+```typescript
+shell<I, O>(opts: {
+  id: string;
+  input: z.ZodType<I>;
+  output: z.ZodType<O>;
+  description?: string;
+  command: (input: I) => string;
+  parse: (result: ShellResult, input: I) => O;
+}) => Step<I, O>
+```
+
+### `agent`
+
+Create a step that dispatches to an `AgentExecutor`.
+
+```typescript
+agent<I, O>(opts: {
+  id: string;
+  input: z.ZodType<I>;
+  output: z.ZodType<O>;
+  description?: string;
+  prompt: (input: I) => string;
+  mode?: AgentOutputMode;
+  agent_opts?: AgentStepOpts;
+}) => Step<I, O>
+```
+
+Two output modes:
+- `"analyze"` — JSON parsed from LLM text output
+- `"build"` — output extracted from session metadata
+
+Agent output is validated against the step's Zod output schema regardless of mode.
+
+### `checkpoint`
+
+Create a step that pauses execution for external input (human-in-the-loop).
+
+```typescript
+checkpoint<I, O>(opts: {
+  id: string;
+  input: z.ZodType<I>;
+  output: z.ZodType<O>;
+  description?: string;
+  prompt: (input: I) => string;
+}) => Step<I, O>
+```
+
+---
+
+## Workflow Builder
+
+```typescript
+import { defineWorkflow } from "@f0rbit/runbook";
+```
+
+### `defineWorkflow`
+
+```typescript
+defineWorkflow<WI>(input: z.ZodType<WI>) => WorkflowBuilder<WI, WI>
+```
+
+Returns a `WorkflowBuilder` with a fluent API:
+
+```typescript
+const workflow = defineWorkflow(z.object({ task: z.string() }))
+  .pipe(analyzeStep, (input) => ({ prompt: input.task }))
+  .pipe(buildStep, (input, prev) => ({ plan: prev.plan }))
+  .parallel([
+    { step: testStep, mapper: (input, prev) => prev },
+    { step: lintStep, mapper: (input, prev) => prev },
+  ])
+  .build({ id: "my-workflow" });
+```
+
+Key builder methods:
+
+| Method | Description |
+|--------|-------------|
+| `.pipe(step, mapper)` | Append a step. Mapper receives `(workflow_input, previous_step_output)` — both fully typed. |
+| `.parallel(defs)` | Fan out to multiple steps. Returns a tuple type of all parallel step outputs. |
+| `.build({ id })` | Finalize into a `Workflow` object. |
+| `.asStep()` | Wrap the workflow as a `Step` for composition into other workflows. |
+
+---
+
+## Trace
+
+```typescript
+import { TraceCollector } from "@f0rbit/runbook";
+```
+
+### `TraceCollector`
+
+Class implementing the `TraceEmitter` interface. Collects typed trace events during workflow execution.
+
+| Method | Signature |
+|--------|-----------|
+| `emit` | `(event: TraceEvent) => void` |
+| `onEvent` | `(listener: (event: TraceEvent) => void) => void` |
+| `toTrace` | `(run_id: string, workflow_id: string, status: string, duration_ms: number) => Trace` |
+
+Traces are typed event streams, not string logs. The `TraceEventSchema` is a discriminated union of 14 event types covering workflow lifecycle, step execution, agent interactions, and errors.
+
+---
+
+## Errors
+
+```typescript
+import { errors } from "@f0rbit/runbook";
+```
+
+The `errors` object provides constructors for all error types used in `Result<T, E>` returns:
+
+| Constructor | Description |
+|-------------|-------------|
+| `errors.validation` | Input/output schema validation failure |
+| `errors.execution` | General execution error |
+| `errors.shell` | Shell command failure |
+| `errors.agent` | Agent executor failure |
+| `errors.agent_parse` | Failed to parse agent output |
+| `errors.timeout` | Step exceeded `timeout_ms` |
+| `errors.aborted` | Run was cancelled |
+| `errors.checkpoint_rejected` | Checkpoint input rejected |
+| `errors.step_failed` | Generic step failure wrapper |
+| `errors.invalid_workflow` | Workflow definition error |
+| `errors.config_error` | Configuration loading/validation error |
+
+---
+
+## Type Exports
+
+All types are inferred from Zod schemas or defined alongside their modules. 42 type exports total.
+
+### Error Types
+
+| Type | Description |
+|------|-------------|
+| `AgentError` | Error from agent execution |
+| `CheckpointError` | Error from checkpoint resolution |
+| `ClientError` | Error from CLI/client operations |
+| `ShellError` | Error from shell command execution |
+| `StepError` | Generic step error wrapper |
+| `WorkflowError` | Workflow-level error |
+
+### Agent Types
+
+| Type | Description |
+|------|-------------|
+| `AgentEvent` | Event emitted during agent execution |
+| `AgentOutputMode` | `"analyze" \| "build"` |
+| `AgentPermission` | Permission granted to agent session |
+| `AgentResponse` | Response from agent execution |
+| `AgentSession` | Active agent session handle |
+| `AgentStepOpts` | Options for agent steps (model, timeout, permissions, etc.) |
+| `AgentToolCall` | Tool call made by agent |
+| `CreateSessionOpts` | Options for creating an agent session |
+| `PromptOpts` | Options for prompting an agent |
+
+### Provider Interfaces
+
+| Type | Description |
+|------|-------------|
+| `AgentExecutor` | Interface for agent execution backends |
+| `CheckpointProvider` | Interface for checkpoint (human-in-the-loop) backends |
+| `ShellProvider` | Interface for shell command execution |
+| `ShellOpts` | Options passed to shell provider |
+| `ShellResult` | Result from shell execution (stdout, stderr, exit code) |
+
+### Config Types
+
+| Type | Description |
+|------|-------------|
+| `AgentExecutorConfig` | Agent executor config (inferred from `AgentExecutorConfigSchema`) |
+| `ProviderConfig` | Provider config (inferred from `ProviderConfigSchema`) |
+| `RunbookConfig` | Full config (inferred from `RunbookConfigSchema`) |
+| `ServerConfig` | Server config (inferred from `ServerConfigSchema`) |
+
+### Workflow Types
+
+| Type | Description |
+|------|-------------|
+| `MapperFn` | `(workflow_input, previous_output) => step_input` |
+| `ParallelOutputTuple` | Tuple type of parallel step outputs |
+| `ParallelStepDef` | Definition for a parallel step (`{ step, mapper }`) |
+| `Workflow` | Finalized workflow object |
+| `WorkflowBuilder` | Fluent builder for constructing workflows |
+
+### Step Types
+
+| Type | Description |
+|------|-------------|
+| `Step` | Step object with typed input/output |
+| `StepContext` | Context passed to step `run` function (includes `engine` for sub-workflows) |
+| `StepKind` | `"fn" \| "shell" \| "agent" \| "checkpoint"` |
+| `StepNode` | Internal workflow graph node |
+
+### Engine & State Types
+
+| Type | Description |
+|------|-------------|
+| `EngineHandle` | Handle returned from engine.run() for tracking execution |
+| `RunResult` | Final result of a workflow run |
+| `RunState` | Run state (inferred from `RunStateSchema`) |
+| `PendingCheckpoint` | Checkpoint awaiting external input |
+
+### Trace Types
+
+| Type | Description |
+|------|-------------|
+| `Trace` | Complete trace (inferred from `TraceSchema`) |
+| `TraceEmitter` | Interface for emitting trace events |
+| `TraceEvent` | Union of 14 trace event types (inferred from `TraceEventSchema`) |
+
+---
+
+## Test Providers
+
+```typescript
+import {
+  InMemoryShellProvider,
+  InMemoryAgentExecutor,
+  InMemoryCheckpointProvider,
+} from "@f0rbit/runbook/test";
+```
+
+### `InMemoryShellProvider`
+
+Drop-in shell provider for tests. Script responses by command pattern.
+
+```typescript
+const shell = new InMemoryShellProvider();
+shell.on("tsc --noEmit", { stdout: "", stderr: "", exit_code: 0 });
+
+// After execution:
+shell.executed; // Array of { command, opts } for assertions
+```
+
+### `InMemoryAgentExecutor`
+
+Drop-in agent executor for tests. Script responses by prompt pattern.
+
+```typescript
+const agent = new InMemoryAgentExecutor();
+agent.on("analyze this code", {
+  output: { summary: "looks good" },
+  session_id: "test-1",
+});
+
+// After execution:
+agent.created_sessions; // Array of CreateSessionOpts
+agent.prompted;         // Array of { session_id, prompt, opts }
+```
+
+### `InMemoryCheckpointProvider`
+
+Drop-in checkpoint provider for tests. Script responses by prompt pattern.
+
+```typescript
+const checkpoints = new InMemoryCheckpointProvider();
+checkpoints.on("approve this plan", { approved: true });
+
+// After execution:
+checkpoints.prompted; // Array of { prompt, step_id }
+```
+
+---
+
+## @f0rbit/runbook-git-store (packages/git-store.mdx)
+
+Git-based artifact store for workflow traces and agent sessions. Published as `@f0rbit/runbook-git-store` on npm.
+
+```bash
+bun add @f0rbit/runbook-git-store
+```
+
+Runs are stored under `refs/runbook/runs/<run-id>` — invisible to `git log` since they live outside the normal commit graph. Uses raw git commands (`git hash-object`, `git mktree`, `git update-ref`) with no git library dependency.
+
+---
+
+## Factory Function
+
+```typescript
+import { createGitArtifactStore } from "@f0rbit/runbook-git-store";
+
+const store = createGitArtifactStore();
+```
+
+```typescript
+function createGitArtifactStore(): GitArtifactStore
+```
+
+Returns a `GitArtifactStore` instance. All methods accept an optional `cwd` parameter for targeting a specific git repository.
+
+---
+
+## GitArtifactStore Interface
+
+```typescript
+type GitArtifactStore = {
+  store: (run: StorableRun, opts?: StoreOpts) => Promise<Result<StoredRun, GitStoreError>>;
+  list: (opts?: ListOpts) => Promise<Result<StoredRunInfo[], GitStoreError>>;
+  getTrace: (run_id: string) => Promise<Result<Trace, GitStoreError>>;
+  getStepArtifacts: (run_id: string, step_id: string) => Promise<Result<StepArtifacts, GitStoreError>>;
+  linkToCommit: (run_id: string, commit_sha: string) => Promise<Result<void, GitStoreError>>;
+  push: (opts?: SyncOpts) => Promise<Result<SyncResult, GitStoreError>>;
+  pull: (opts?: SyncOpts) => Promise<Result<SyncResult, GitStoreError>>;
+};
+```
+
+All methods return `Result<T, GitStoreError>` — errors as values, never thrown.
+
+### `store`
+
+Write a completed run's artifacts to git refs.
+
+```typescript
+const result = await store.store({
+  run_id: "run-abc123",
+  workflow_id: "verify",
+  input: { task: "check types" },
+  output: { passed: true },
+  trace: collectedTrace,
+  duration_ms: 4200,
+  steps: [{ step_id: "tsc", input: {}, output: { exit_code: 0 } }],
+}, { commit_sha: "a1b2c3d", cwd: "/my/repo" });
+```
+
+### `list`
+
+List stored runs, optionally filtered by workflow ID.
+
+```typescript
+const result = await store.list({ limit: 10, workflow_id: "verify" });
+```
+
+### `getTrace`
+
+Retrieve the full typed trace for a run.
+
+```typescript
+const result = await store.getTrace("run-abc123");
+```
+
+### `getStepArtifacts`
+
+Retrieve artifacts for a specific step within a run.
+
+```typescript
+const result = await store.getStepArtifacts("run-abc123", "tsc");
+```
+
+### `linkToCommit`
+
+Associate a run with a git commit SHA. Updates the run's metadata to include the commit reference.
+
+```typescript
+await store.linkToCommit("run-abc123", "a1b2c3d4e5f6");
+```
+
+### `push`
+
+Push artifact refs to a remote repository.
+
+```typescript
+const result = await store.push({ remote: "origin" });
+// result: { refs_synced: 3, remote: "origin" }
+```
+
+### `pull`
+
+Pull artifact refs from a remote repository.
+
+```typescript
+const result = await store.pull({ remote: "origin" });
+```
+
+---
+
+## Types
+
+### `StorableRun`
+
+Input to `store()` — a completed run ready for persistence.
+
+```typescript
+type StorableRun = {
+  run_id: string;
+  workflow_id: string;
+  input: unknown;
+  output: unknown;
+  trace: Trace;
+  duration_ms: number;
+  steps?: Array<{
+    step_id: string;
+    input: unknown;
+    output: unknown;
+    prompt?: string;
+    response?: string;
+    iterations?: number;
+  }>;
+};
+```
+
+### `StoredRun`
+
+Result of a successful `store()` call.
+
+```typescript
+type StoredRun = {
+  run_id: string;
+  ref: string; // e.g. "refs/runbook/runs/run-abc123"
+};
+```
+
+### `StoredRunInfo`
+
+Summary returned by `list()`.
+
+```typescript
+type StoredRunInfo = {
+  run_id: string;
+  workflow_id: string;
+  status: string;
+  started_at: string;
+  duration_ms: number;
+  commit_sha?: string;
+};
+```
+
+### `StepArtifacts`
+
+Per-step data returned by `getStepArtifacts()`.
+
+```typescript
+type StepArtifacts = {
+  step_id: string;
+  input: unknown;
+  output: unknown;
+  prompt?: string;
+  response?: string;
+  iterations?: number;
+};
+```
+
+### `StoreOpts`
+
+Options for `store()`.
+
+```typescript
+type StoreOpts = {
+  commit_sha?: string;
+  cwd?: string;
+};
+```
+
+### `ListOpts`
+
+Options for `list()`.
+
+```typescript
+type ListOpts = {
+  limit?: number;
+  workflow_id?: string;
+  cwd?: string;
+};
+```
+
+### `SyncOpts`
+
+Options for `push()` and `pull()`.
+
+```typescript
+type SyncOpts = {
+  remote?: string; // default: "origin"
+  cwd?: string;
+};
+```
+
+### `SyncResult`
+
+Result of a successful `push()` or `pull()`.
+
+```typescript
+type SyncResult = {
+  refs_synced: number;
+  remote: string;
+};
+```
+
+### `GitStoreError`
+
+Discriminated union of error types:
+
+```typescript
+type GitStoreError =
+  | { kind: "git_not_found"; message: string }
+  | { kind: "ref_not_found"; run_id: string; message: string }
+  | { kind: "git_command_failed"; command: string; stderr: string; exit_code: number }
+  | { kind: "parse_error"; file: string; message: string };
+```
+
+| Kind | When |
+|------|------|
+| `git_not_found` | No git repository found at the target directory |
+| `ref_not_found` | The requested run ID has no stored ref |
+| `git_command_failed` | A raw git command exited with non-zero |
+| `parse_error` | Stored JSON failed to parse (corrupted artifact) |
+
+---
+
+## Ref Structure
+
+Each run is stored as a git tree under `refs/runbook/runs/<run-id>`:
+
+```
+refs/runbook/runs/<run-id>
+├── metadata.json        # workflow ID, input, output, timing, optional commit SHA
+├── trace.json           # full typed event stream
+└── steps/
+    └── <step-id>/
+        ├── input.json   # step input
+        ├── output.json  # step output
+        ├── prompt.txt   # agent/checkpoint prompt (if applicable)
+        └── response.txt # agent response (if applicable)
+```
+
+These refs are invisible to `git log` — they live outside the normal commit graph. The store uses low-level git commands to create blob objects, assemble trees, and update refs without creating commits in the main history.
+
+### How It Works
+
+1. **`git hash-object -w`** — writes each JSON/text file as a blob
+2. **`git mktree`** — assembles blobs into tree objects (nested for `steps/`)
+3. **`git update-ref`** — points `refs/runbook/runs/<run-id>` at the root tree
+4. **`git push/fetch`** — syncs refs using standard git refspecs
+
+This approach gives you:
+- **Zero impact** on your working tree and commit history
+- **Full git deduplication** for repeated content
+- **Standard git transport** for push/pull to remotes
+- **Garbage collection safety** — refs protect objects from `git gc`
+
+---
+
+## @f0rbit/runbook-server (packages/server.mdx)
+
+The server package runs the workflow execution engine and exposes an HTTP API. Published as `@f0rbit/runbook-server` on npm.
+
+```bash
+bun add @f0rbit/runbook-server
+```
+
+---
+
+## Engine
+
+```typescript
+import { createEngine } from "@f0rbit/runbook-server";
+```
+
+### `createEngine`
+
+```typescript
+function createEngine(opts: EngineOpts): Engine
+```
+
+Creates the workflow execution engine. The engine dispatches step execution to providers — it never calls `Bun.spawn` or `fetch` directly.
+
+```typescript
+const engine = createEngine({
+  providers: {
+    shell: new BunShellProvider(),
+    agent: new OpenCodeExecutor({ model: "claude-sonnet" }),
+    checkpoint: createServerCheckpointProvider(registry),
+  },
+  working_directory: "/path/to/project",
+});
+
+const handle = engine.run(workflow, input, opts);
+```
+
+### `Engine` (type)
+
+Engine instance. Primary method:
+
+| Method | Signature |
+|--------|-----------|
+| `run` | `(workflow: Workflow, input: unknown, opts?: RunOpts) => EngineHandle` |
+
+### `EngineOpts` (type)
+
+```typescript
+type EngineOpts = {
+  providers: {
+    shell?: ShellProvider;
+    agent?: AgentExecutor;
+    checkpoint?: CheckpointProvider;
+  };
+  working_directory?: string;
+};
+```
+
+The `working_directory` propagates to shell `opts.cwd` and agent `createSession` calls.
+
+### `RunOpts` (type)
+
+Options passed to `engine.run()` for controlling execution behavior (run ID, trace collector, abort signal).
+
+---
+
+## Providers
+
+```typescript
+import {
+  BunShellProvider,
+  OpenCodeExecutor,
+  createServerCheckpointProvider,
+  resolveProviders,
+  verifyProviders,
+} from "@f0rbit/runbook-server";
+```
+
+### `BunShellProvider`
+
+Real shell provider using `Bun.spawn`. Executes commands in a subprocess with configurable working directory and environment.
+
+```typescript
+const shell = new BunShellProvider();
+const result = await shell.exec("tsc --noEmit", { cwd: "/my/project" });
+// result: { stdout: string, stderr: string, exit_code: number }
+```
+
+### `OpenCodeExecutor`
+
+Agent executor implementation for the [OpenCode](https://opencode.ai) agent. Manages sessions, prompts, and tool calls.
+
+```typescript
+const executor = new OpenCodeExecutor(opts);
+const session = await executor.createSession({ working_directory: "/project" });
+const response = await executor.prompt(session, "analyze this code", { mode: "analyze" });
+```
+
+### `OpenCodeExecutorOpts` (type)
+
+```typescript
+type OpenCodeExecutorOpts = {
+  model?: string;
+};
+```
+
+### `createServerCheckpointProvider`
+
+Creates a checkpoint provider that bridges the engine's pause/resume flow with the HTTP endpoint. When a checkpoint step executes, the engine pauses and the server exposes a `POST` endpoint for external resolution. The CLI prompts stdin and sends the response.
+
+```typescript
+const registry: PendingCheckpointRegistry = new Map();
+const checkpoint = createServerCheckpointProvider(registry);
+```
+
+### `PendingCheckpointRegistry` (type)
+
+Registry that tracks pending checkpoints. Maps run/step IDs to their resolve/reject callbacks so the HTTP endpoint can complete them.
+
+### `resolveProviders`
+
+```typescript
+function resolveProviders(config: ProviderConfig): ResolvedProviders
+```
+
+Creates real provider instances from a `ProviderConfig` object. Always creates a `BunShellProvider`. Creates an `OpenCodeExecutor` when `agent.type === "opencode"`.
+
+```typescript
+const providers = resolveProviders({
+  agent: { type: "opencode" },
+});
+// providers.shell  → BunShellProvider
+// providers.agent  → OpenCodeExecutor
+```
+
+### `verifyProviders`
+
+```typescript
+function verifyProviders(
+  providers: ResolvedProviders,
+  workflow: Workflow
+): Result<void, VerifyError>
+```
+
+Checks that all required providers exist for a workflow's step types. Returns an error if a workflow contains `agent` steps but no `AgentExecutor` is configured, for example.
+
+### `ResolvedProviders` (type)
+
+Result of `resolveProviders`. Contains the instantiated provider objects.
+
+### `ResolveError` (type)
+
+Error returned when provider resolution fails (e.g., unknown agent type).
+
+### `VerifyError` (type)
+
+Error returned when a workflow requires providers that aren't configured.
+
+---
+
+## Server
+
+```typescript
+import { createServer } from "@f0rbit/runbook-server";
+```
+
+### `createServer`
+
+```typescript
+function createServer(deps: ServerDeps): Hono
+```
+
+Creates a [Hono](https://hono.dev) HTTP server with the following routes:
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/runs` | Submit a new workflow run |
+| `GET` | `/runs/:id` | Get run status |
+| `GET` | `/runs/:id/trace` | Get run trace |
+| `GET` | `/runs/:id/events` | SSE stream of trace events |
+| `POST` | `/runs/:id/checkpoints/:step` | Resolve a pending checkpoint |
+| `POST` | `/runs/:id/cancel` | Cancel a running workflow |
+| `GET` | `/workflows` | List registered workflows |
+
+### `ServerDeps` (type)
+
+Dependencies injected into the server:
+
+```typescript
+type ServerDeps = {
+  engine: Engine;
+  state: RunStateStore;
+  workflows: Map<string, Workflow>;
+  checkpoint_registry: PendingCheckpointRegistry;
+};
+```
+
+### API Tests
+
+Server API tests use `app.request()` directly — no real HTTP server is started:
+
+```typescript
+const app = createServer(deps);
+const res = await app.request("/workflows", { method: "GET" });
+const data = await res.json();
+```
+
+---
+
+## State
+
+```typescript
+import { createInMemoryStateStore } from "@f0rbit/runbook-server";
+```
+
+### `createInMemoryStateStore`
+
+```typescript
+function createInMemoryStateStore(): RunStateStore
+```
+
+Creates an in-memory state store for tracking run states. This is the v0.1 implementation — no persistence across server restarts.
+
+```typescript
+const state = createInMemoryStateStore();
+await state.set(run_id, { status: "running", ... });
+const run = await state.get(run_id);
+```
+
+### `RunStateStore` (type)
+
+Interface for run state persistence:
+
+| Method | Signature |
+|--------|-----------|
+| `get` | `(run_id: string) => Promise<RunState \| undefined>` |
+| `set` | `(run_id: string, state: RunState) => Promise<void>` |
+| `list` | `() => Promise<RunState[]>` |
+
+---
+
+## Comparisons (use-cases/comparisons.mdx)
+
+# Comparisons
+
+Runbook occupies a specific niche: **typed workflow orchestration where AI agents are first-class step types**. Most tools in adjacent spaces solve different problems or make different trade-offs.
+
+---
+
+## vs LangChain / LlamaIndex
+
+LLM prompt chain libraries designed for prompt engineering and retrieval-augmented generation.
+
+| | LangChain / LlamaIndex | Runbook |
+|---|---|---|
+| **Primary focus** | Prompt engineering, RAG pipelines | Workflow orchestration with typed steps |
+| **Step types** | LLM calls, retrievers, tools | fn(), shell(), agent(), checkpoint() |
+| **Type safety** | Runtime validation only | Compile-time Zod schemas at every boundary |
+| **Shell execution** | Not built-in | First-class `shell()` step with typed parse |
+| **Human-in-the-loop** | Limited callback hooks | Native `checkpoint()` step with pause/resume |
+| **Testing** | Mock LLM responses | In-memory providers — no mocking required |
+| **Agent model** | Direct LLM API calls | `AgentExecutor` interface — pluggable executors |
+| **Trace format** | String logs, LangSmith integration | Typed `TraceEvent` stream, git artifact storage |
+
+**When to use LangChain:** You are building a RAG pipeline, need prompt templating, or want deep integration with vector stores and document loaders.
+
+**When to use Runbook:** You are orchestrating multi-step workflows where AI agents are one component alongside shell commands, human approvals, and typed data transformations.
+
+---
+
+## vs Temporal / Inngest
+
+Distributed workflow engines designed for microservice orchestration.
+
+| | Temporal / Inngest | Runbook |
+|---|---|---|
+| **Primary focus** | Distributed microservice workflows | AI agent orchestration |
+| **Runtime** | Temporal Server (Go), Workers (Java/Go/TS) | Single Bun process |
+| **Setup** | Cluster, database, workers | `bun run serve` |
+| **Step boundaries** | Activity interfaces | Zod schemas with compile-time checking |
+| **Agent support** | Build it yourself | Native `agent()` step with typed I/O |
+| **Human-in-the-loop** | Signal-based, custom UI required | Built-in `checkpoint()` with CLI stdin |
+| **Testing** | Replay-based, requires test server | In-memory providers, `bun test` |
+| **Durability** | Persistent, replay from event log | In-memory (v0.1), git artifact archive |
+| **Scale** | Distributed, multi-worker | Single process, local-first |
+
+**When to use Temporal:** You need distributed execution, durable workflows surviving process restarts, or microservice coordination at scale.
+
+**When to use Runbook:** You need a lightweight local runtime for AI agent workflows with typed step boundaries, structured traces, and instant testability. No cluster required.
+
+---
+
+## vs GitHub Actions / CI Systems
+
+Cloud-hosted CI/CD with YAML-based workflow definitions.
+
+| | GitHub Actions / CI | Runbook |
+|---|---|---|
+| **Definition format** | YAML | TypeScript |
+| **Type safety** | None — string interpolation | Zod schemas, compile-time checks |
+| **AI agent steps** | Shell out to CLI tools | Native `agent()` step with typed output |
+| **Human approval** | Environment protection rules | `checkpoint()` step — mid-workflow pause |
+| **Testing** | Run the workflow (slow, costly) | In-memory providers, `bun test` |
+| **Execution** | Cloud runners, Docker containers | Local Bun process |
+| **Traces** | Log lines | Typed `TraceEvent` stream |
+| **Composition** | Reusable workflows (limited) | `asStep()` — full sub-workflow composition |
+| **Branching** | `if:` conditions on steps | `fn()` steps with arbitrary TypeScript logic |
+
+**When to use GitHub Actions:** Standard CI/CD — build, test, deploy pipelines that run on push/PR events in cloud infrastructure.
+
+**When to use Runbook:** Workflows that include AI agent steps, need mid-workflow human approval, require typed output validation, or must be testable without cloud infrastructure.
+
+---
+
+## vs Raw Scripting
+
+Shell scripts and Node.js scripts glued together with `&&` and `|`.
+
+| | Shell / Node scripts | Runbook |
+|---|---|---|
+| **Step composition** | String concatenation, exit codes | Typed `pipe()` with Zod validation |
+| **Error handling** | `set -e`, try/catch | `Result<T, E>` at every boundary |
+| **Agent integration** | HTTP calls, parse JSON manually | `agent()` step with schema validation |
+| **Human gates** | `read -p` | `checkpoint()` with typed output |
+| **Testing** | Mock everything or don't test | In-memory providers, deterministic |
+| **Traces** | `echo` statements | Typed event stream |
+| **Parallel execution** | `&` and `wait` | `parallel()` with tuple-typed output |
+| **Reuse** | Source scripts, copy-paste | `asStep()` sub-workflow composition |
+
+**When to use scripts:** One-off automation, simple sequential tasks, no need for typed output or traceability.
+
+**When to use Runbook:** Multi-step workflows with AI agents, typed data flow, human checkpoints, or any pipeline you need to test and audit.
+
+---
+
+## vs Custom Orchestrators
+
+Building your own with Zod + fetch + Bun.spawn.
+
+| | Custom orchestrator | Runbook |
+|---|---|---|
+| **Initial effort** | Low for one workflow | Low — define steps, wire pipeline |
+| **Second workflow** | Duplicate plumbing | Reuse step builders and providers |
+| **Traces** | Build it yourself | Built-in typed event stream |
+| **Checkpoints** | Build pause/resume yourself | Native checkpoint with HTTP + CLI |
+| **Parallel fan-out** | Promise.all, type manually | `parallel()` with tuple types |
+| **Sub-workflows** | Call functions, lose type context | `asStep()` preserves full type chain |
+| **Git storage** | Build it yourself | `@f0rbit/runbook-git-store` |
+| **Test harness** | Build providers yourself | `@f0rbit/runbook/test` — ready to use |
+| **Maintenance** | You own all of it | Engine updates, provider additions |
+
+**When to build custom:** You have exactly one workflow with unique constraints that don't fit Runbook's step model.
+
+**When to use Runbook:** You have multiple workflows, need structured traces, want testability without mocking, or expect to add more agent-powered pipelines over time.
+
+---
+
+## Use Cases (use-cases/overview.mdx)
+
+# The Problem
+
+Software teams increasingly use AI coding agents for real development work. But there is no standard way to:
+
+1. **Orchestrate multi-step agent workflows.** "Analyze this PR, then fix the issues, then run tests, then open a PR" requires manual coordination or brittle shell scripts. Each step is a separate agent invocation with no typed contract between them.
+
+2. **Validate agent output.** Agents return unstructured text. There is no compile-time guarantee that what one step produces matches what the next step expects.
+
+3. **Audit what happened.** Agent sessions produce logs, but there is no structured trace of decisions, tool calls, and outputs across a multi-step pipeline.
+
+4. **Test agent workflows.** You cannot unit test a workflow that calls GPT-4. Each run costs money, takes 30–60 seconds, and produces non-deterministic output.
+
+5. **Compose workflows.** Reusing a "review code" workflow inside a "deploy feature" workflow should not require copy-pasting steps.
+
+---
+
+# The Solution
+
+Runbook is a typed workflow engine where AI agents are first-class step types alongside pure functions, shell commands, and human checkpoints.
+
+**Key differentiators:**
+
+| Capability | How Runbook delivers it |
+|---|---|
+| Compile-time type safety | Zod schemas at every step boundary — TypeScript catches wiring errors before runtime |
+| Pluggable agent dispatch | `AgentExecutor` interface, not raw LLM API calls |
+| Two agent output modes | `"analyze"` (JSON from text) and `"build"` (from session metadata) |
+| Deterministic testing | In-memory providers — instant, free, no mocking |
+| Structured traces | Typed `TraceEvent` objects, not string logs |
+| Git artifact storage | Every agent interaction recorded and content-addressed under `refs/runbook/runs/` |
+
+---
+
+# Use Cases
+
+## 1. Automated Code Review Pipeline
+
+```
+read PR diff → agent: analyze → agent: suggest fixes
+  → checkpoint: approval → apply fixes → run tests
+```
+
+Agent output is validated against a Zod schema at every boundary. The review step produces typed issues, not freeform text:
+
+```typescript
+import { agent, shell, checkpoint, defineWorkflow } from "@f0rbit/runbook";
+import { z } from "zod";
+
+const IssueSchema = z.object({
+  file: z.string(),
+  line: z.number(),
+  description: z.string(),
+  severity: z.enum(["error", "warning", "info"]),
+});
+
+const ReviewOutputSchema = z.object({
+  issues: z.array(IssueSchema),
+  summary: z.string(),
+});
+
+const review = agent({
+  id: "review-pr",
+  input: z.object({ diff: z.string() }),
+  output: ReviewOutputSchema,
+  prompt: (input) => `Review this PR diff and identify issues:\n${input.diff}`,
+  mode: "analyze",
+});
+```
+
+The next step in the pipeline receives `ReviewOutputSchema` — not a string, not `any`. TypeScript enforces the contract at compile time.
+
+```typescript
+const fix = agent({
+  id: "fix-issues",
+  input: ReviewOutputSchema,
+  output: z.object({ files_changed: z.array(z.string()) }),
+  prompt: (input) =>
+    `Fix these issues:\n${input.issues.map((i) => `${i.file}:${i.line} — ${i.description}`).join("\n")}`,
+  mode: "build",
+});
+```
+
+## 2. Feature Implementation Workflow
+
+```
+parse spec → agent: plan (analyze mode) → checkpoint: approve
+  → agent: write code (build mode) → shell: test → agent: fix → shell: lint
+```
+
+The planning agent outputs structured phases. The checkpoint pauses for human review. The coding agent operates in `"build"` mode — output is extracted from session metadata (files changed), not from the LLM's text response.
+
+```typescript
+const PlanSchema = z.object({
+  phases: z.array(z.object({
+    name: z.string(),
+    tasks: z.array(z.string()),
+  })),
+});
+
+const plan = agent({
+  id: "plan",
+  input: z.object({ spec: z.string() }),
+  output: PlanSchema,
+  prompt: (input) => `Break this spec into implementation phases:\n${input.spec}`,
+  mode: "analyze",
+});
+
+const approve = checkpoint({
+  id: "approve-plan",
+  input: PlanSchema,
+  output: z.object({ approved: z.boolean() }),
+  prompt: (input) =>
+    `Approve this plan?\n${input.phases.map((p) => `- ${p.name}: ${p.tasks.join(", ")}`).join("\n")}`,
+});
+```
+
+## 3. CI/CD with Agent Steps
+
+```
+shell: build → shell: test → agent: analyze failures
+  → checkpoint: deploy approval → shell: deploy
+```
+
+Shell steps handle standard CI tasks. When tests fail, an agent step analyzes the failure output and produces a structured diagnosis. The checkpoint gates deployment on human approval.
+
+## 4. Documentation Generation
+
+```
+agent: scan codebase → agent: generate docs → shell: format
+  → checkpoint: review
+```
+
+The scanning agent produces a structured codebase map. The generation agent uses that map to produce documentation. Shell steps handle formatting (Prettier, markdownlint). The checkpoint lets a human review before merge.
+
+## 5. Incident Response Runbook
+
+```
+shell: collect logs → agent: analyze root cause → agent: draft fix
+  → checkpoint: approve → agent: implement → shell: test → shell: deploy
+```
+
+Shell steps collect logs and metrics. Agent steps analyze root cause and draft a fix. The checkpoint ensures a human approves before any code changes are applied. The entire trace is recorded — who approved what, when, and what the agent decided.
+
+---
+
+# Who Is This For
+
+**Teams building AI-augmented dev tooling** — A typed pipeline runtime, not another prompt chain library. Define workflows in TypeScript with compile-time safety, test them deterministically, and audit every execution.
+
+**Platform engineers** — Standardize agent workflow definitions, testing, and auditing across teams. The Provider pattern means workflows are portable — swap executors without changing workflow code.
+
+**Solo developers** — Automate multi-step coding workflows with structured output and traceability. Run locally on Bun with a single server process — no cluster, no cloud, no YAML.
+
+---
+
+## Architecture (resources/architecture.mdx)
+
+# Architecture Overview
+
+Runbook uses a **client/server architecture**. The engine runs in a persistent server process. The CLI is a thin HTTP client that submits runs and streams results.
+
+```
+┌─────────┐         ┌──────────────────────────────────────────────┐
+│   CLI   │──HTTP──▶│  Server (Hono)                               │
+│         │◀──SSE───│                                              │
+└─────────┘         │  ┌────────────────────────────────────────┐  │
+                    │  │  Engine                                 │  │
+                    │  │  ├── fn steps      (in-process)         │  │
+                    │  │  ├── shell steps   (ShellProvider)      │  │
+                    │  │  ├── agent steps   (AgentExecutor)      │  │
+                    │  │  └── checkpoint    (pause/resume)       │  │
+                    │  └────────────────────────────────────────┘  │
+                    │                                              │
+                    │  ┌──────────────────┐  ┌─────────────────┐  │
+                    │  │  State Store      │  │  Git Artifact   │  │
+                    │  │  (in-memory)      │  │  Store          │  │
+                    │  └──────────────────┘  └─────────────────┘  │
+                    └──────────────────────────────────────────────┘
+```
+
+---
+
+# Components
+
+## Server — `@f0rbit/runbook-server`
+
+Hono HTTP server that hosts the execution engine, manages run state, and dispatches steps to providers. Runs as a persistent process via `bun run serve`.
+
+**Responsibilities:**
+- Accept workflow run requests via HTTP
+- Create and manage `RunState` for each execution
+- Dispatch steps to the appropriate provider
+- Stream trace events to clients via SSE
+- Expose checkpoint endpoints for human approval flow
+
+## CLI — `@f0rbit/runbook-cli`
+
+Thin HTTP client published as the `runbook` binary. No business logic — all execution happens server-side.
+
+**Responsibilities:**
+- Submit workflow runs to the server
+- Stream real-time trace events via SSE
+- Handle checkpoint prompts via stdin
+- Discover config files (`--config` flag → `runbook.config.ts` in cwd → walk up → global fallback)
+
+## Core SDK — `@f0rbit/runbook`
+
+Type definitions, step builders, workflow builder, and trace types. Consumed by both the server and users who define workflows.
+
+**Exports:**
+- Step builders: `fn()`, `shell()`, `agent()`, `checkpoint()`
+- Workflow builder: `defineWorkflow()`, `.pipe()`, `.parallel()`, `.done()`
+- Sub-workflow composition: `.asStep()`
+- Trace types: `TraceEvent` and all 14 event type definitions
+- Test providers: `@f0rbit/runbook/test` subpath export
+
+No runtime dependencies beyond Zod and `@f0rbit/corpus`.
+
+## Git Store — `@f0rbit/runbook-git-store`
+
+Stores completed runs as git objects under `refs/runbook/runs/<run-id>`. Invisible to `git log` — does not pollute the repository's commit history.
+
+**Implementation:** Reads and writes git objects directly via `git hash-object`, `git mktree`, and `git update-ref`. No git library dependency.
+
+---
+
+# Engine Dispatch Flow
+
+```
+1. Client submits run via HTTP POST
+         │
+         ▼
+2. Server creates RunState, starts engine
+         │
+         ▼
+3. Engine iterates through workflow steps
+         │
+         ▼
+4. For each step:
+   ┌─────────────────────────────────────┐
+   │  Validate input against Zod schema  │
+   │              │                      │
+   │              ▼                      │
+   │  Dispatch based on step kind:       │
+   │  ├─ fn        → in-process call     │
+   │  ├─ shell     → ShellProvider       │
+   │  ├─ agent     → AgentExecutor       │
+   │  └─ checkpoint → pause/resume       │
+   │              │                      │
+   │              ▼                      │
+   │  Validate output against Zod schema │
+   │              │                      │
+   │              ▼                      │
+   │  Emit TraceEvent                    │
+   └─────────────────────────────────────┘
+         │
+         ▼
+5. On completion: store result, optionally archive to git store
+```
+
+Every step boundary is guarded by Zod validation. If input or output fails to parse, the engine produces a typed error — not a runtime exception.
+
+---
+
+# Provider Wiring
+
+`resolveProviders(config)` creates real providers from `ProviderConfig`:
+
+| Provider | Created when | Implementation |
+|---|---|---|
+| `ShellProvider` | Always | `BunShellProvider` — executes via `Bun.spawn` |
+| `AgentExecutor` | `agent.type === "opencode"` | `OpenCodeExecutor` — dispatches to OpenCode sessions |
+| `CheckpointProvider` | Always | `createServerCheckpointProvider()` — bridges engine pause with HTTP endpoint |
+
+Providers are **injected, never hardcoded**. The engine receives providers at construction time and dispatches to them by interface. Swap any provider for an in-memory fake in tests:
+
+```typescript
+import { createEngine } from "@f0rbit/runbook-server";
+import {
+  InMemoryShellProvider,
+  InMemoryAgentExecutor,
+  InMemoryCheckpointProvider,
+} from "@f0rbit/runbook/test";
+
+const engine = createEngine({
+  shell: new InMemoryShellProvider(),
+  agent: new InMemoryAgentExecutor(),
+  checkpoint: new InMemoryCheckpointProvider(),
+});
+```
+
+---
+
+# State Management
+
+v0.1 uses an **in-memory state store** (`createInMemoryStateStore()`). State is lost on server restart. SQLite + Drizzle persistence is planned for future versions.
+
+## RunState
+
+Each workflow execution produces a `RunState` with:
+
+| Field | Type | Description |
+|---|---|---|
+| `run_id` | `string` | Unique execution identifier |
+| `workflow_id` | `string` | ID of the workflow being executed |
+| `status` | `"pending" \| "running" \| "success" \| "failure" \| "cancelled"` | Current execution status |
+| `input` | `unknown` | Validated workflow input |
+| `output` | `unknown` | Final workflow output (on success) |
+| `error` | `StepError` | Error details (on failure) |
+| `trace` | `TraceEvent[]` | Complete event stream |
+| `started_at` | `Date` | Execution start time |
+| `completed_at` | `Date \| null` | Execution end time |
+| `pending_checkpoints` | `Checkpoint[]` | Checkpoints awaiting human input |
+
+---
+
+# Trace System
+
+Every execution produces a typed event stream. Events are emitted in real-time and are streamable to the CLI via SSE.
+
+**14 event types** covering the full lifecycle:
+
+| Category | Events |
+|---|---|
+| Workflow lifecycle | `workflow:start`, `workflow:complete`, `workflow:error` |
+| Step execution | `step:start`, `step:complete`, `step:error`, `step:skip` |
+| Agent sessions | `agent:session:create`, `agent:session:message`, `agent:session:complete` |
+| Checkpoints | `checkpoint:pending`, `checkpoint:resolved` |
+| Parallel execution | `parallel:start`, `parallel:complete` |
+
+Each event carries structured metadata — step ID, timestamps, input/output snapshots, duration. Traces are not string logs. They are typed objects you can filter, aggregate, and store.
+
+---
+
+# Agent Executor Dispatch
+
+When the engine encounters an `agent()` step, it dispatches to the `AgentExecutor` interface:
+
+```
+1. createSession({ working_directory, permissions })
+         │
+         ▼
+2. sendPrompt({ prompt, model, timeout_ms })
+         │
+         ▼
+3. Receive AgentResponse { text, metadata }
+         │
+         ▼
+4. Extract output based on mode:
+   ├─ "analyze" → parse JSON from response text
+   └─ "build"   → extract from session metadata
+         │
+         ▼
+5. Validate against step's Zod output schema
+```
+
+The `AgentExecutor` interface is intentionally minimal — `createSession` and `sendPrompt`. This makes it straightforward to implement new executors for different agent runtimes.
+
+---
+
+# Current Status
+
+**v0.1 — shipped:**
+- Linear pipelines with `pipe()`
+- Parallel fan-out/fan-in with `parallel()`
+- 4 step types: `fn()`, `shell()`, `agent()`, `checkpoint()`
+- In-memory state store
+- Git artifact storage
+- OpenCode executor
+- Sub-workflow composition via `asStep()`
+- `fn()` step escape hatch with `ctx.engine` for dynamic control flow
+
+**Future:**
+- SQLite persistence (Drizzle ORM)
+- Conditional branching
+- Retry policies
+- Workflow visualizer
+- Additional agent executors (Claude Code, Aider, Goose)
+- MCP integration
+- Node.js support
+
+---
+
+## LLM Docs (resources/llms.mdx)
+
+# LLM-Friendly Documentation
+
+@f0rbit/runbook provides machine-readable documentation files optimized for consumption by AI assistants, LLM-powered coding tools, and automated documentation pipelines.
+
+## Available Files
+
+| File | Size | Contents |
+|------|------|----------|
+| [`llms.txt`](/runbook/llms.txt) | ~2 KB | Concise project overview — installation, core concepts, packages, CLI commands |
+| [`llms-full.txt`](/runbook/llms-full.txt) | ~80 KB | Comprehensive reference — full README, use cases, API exports, all documentation pages |
+
+## Usage
+
+### With AI Coding Assistants
+
+Point your AI assistant to the appropriate file based on your needs:
+
+**Quick context** — use `llms.txt` when you need the assistant to understand what runbook is and how to use it:
+
+```
+Read https://f0rbit.github.io/runbook/llms.txt for project context
+```
+
+**Full reference** — use `llms-full.txt` when you need comprehensive API details, configuration options, or in-depth guides:
+
+```
+Read https://f0rbit.github.io/runbook/llms-full.txt for full documentation
+```
+
+### In Tool Configuration
+
+Many AI-powered tools support documentation URLs for project context:
+
+```json
+{
+  "docs": "https://f0rbit.github.io/runbook/llms-full.txt"
+}
+```
+
+### What's Included
+
+**`llms.txt` contains:**
+- Project description and installation
+- Core concepts (step types, workflows, providers, traces)
+- Package overview (4 packages with descriptions)
+- CLI command reference (11 commands)
+- Links to full docs and GitHub
+
+**`llms-full.txt` contains:**
+- Complete README with code examples
+- Full use case document with comparisons
+- Per-package API exports from source
+- CLI command reference with all options
+- All documentation pages (stripped of formatting metadata)
+- Configuration reference
+
+## Generation
+
+These files are generated automatically during the docs build process from:
+- Repository README and USECASE documents
+- Package export files (`packages/*/src/index.ts`)
+- All documentation pages (`docs/src/content/docs/**/*.mdx`)
+
+The generation script runs before each Astro build, ensuring the LLM docs stay in sync with the documentation site.
+
+---
+
+# Links
+
+- Documentation: https://f0rbit.github.io/runbook/
+- GitHub: https://github.com/f0rbit/runbook
+- Concise version: https://f0rbit.github.io/runbook/llms.txt
