@@ -15,6 +15,29 @@ function formatDuration(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
+type LogLevel = "INFO" | "WARN" | "FAIL";
+
+function formatTimestamp(date: Date): string {
+	const y = date.getFullYear();
+	const mo = String(date.getMonth() + 1).padStart(2, "0");
+	const d = String(date.getDate()).padStart(2, "0");
+	const h = String(date.getHours()).padStart(2, "0");
+	const mi = String(date.getMinutes()).padStart(2, "0");
+	const s = String(date.getSeconds()).padStart(2, "0");
+	return `${y}-${mo}-${d} ${h}:${mi}:${s}`;
+}
+
+function logPrefix(timestamp: Date, level: LogLevel): string {
+	const ts = formatTimestamp(timestamp);
+	const level_color = level === "FAIL" ? RED : level === "WARN" ? YELLOW : DIM;
+	return `${DIM}[${ts}]${RESET}${level_color}[${level}]${RESET} `;
+}
+
+function eventTimestamp(event: TraceEvent): Date {
+	const ts = event.timestamp;
+	return ts instanceof Date ? ts : new Date(ts as unknown as string);
+}
+
 function statusColor(status: string): string {
 	switch (status) {
 		case "success":
@@ -88,13 +111,15 @@ export function formatRunStatus(run: RunInfo): string {
 }
 
 export function formatTrace(trace: Trace): string {
-	const short_id = trace.run_id.slice(0, 8);
-	const header = `${BOLD}▸ ${trace.workflow_id}${RESET} ${DIM}[run:${short_id}]${RESET}`;
-
-	const lines: string[] = [header];
+	const lines: string[] = [];
 	for (const event of trace.events) {
 		const formatted = formatStepEvent(event);
 		if (formatted) lines.push(formatted);
+	}
+
+	if (lines.length === 0) {
+		const short_id = trace.run_id.slice(0, 8);
+		return `${DIM}No events for ${trace.workflow_id} [run:${short_id}]${RESET}`;
 	}
 
 	return lines.join("\n");
@@ -213,41 +238,44 @@ export function formatError(error: unknown): string {
 }
 
 export function formatStepEvent(event: TraceEvent): string | null {
+	const ts = eventTimestamp(event);
+
 	switch (event.type) {
 		case "workflow_start":
-			return `${BOLD}▸ ${event.workflow_id}${RESET} ${DIM}[run:${event.run_id.slice(0, 8)}]${RESET} starting...`;
+			return `${logPrefix(ts, "INFO")}${BOLD}▸ ${event.workflow_id}${RESET} ${DIM}[run:${event.run_id.slice(0, 8)}]${RESET} starting...`;
 		case "workflow_complete":
-			return `${GREEN}✓${RESET} ${BOLD}${event.workflow_id}${RESET} completed in ${formatDuration(event.duration_ms)}`;
+			return `${logPrefix(ts, "INFO")}${GREEN}✓${RESET} ${BOLD}${event.workflow_id}${RESET} completed in ${formatDuration(event.duration_ms)}`;
 		case "workflow_error":
-			return `${RED}✗${RESET} ${BOLD}${event.workflow_id}${RESET} failed after ${formatDuration(event.duration_ms)}`;
+			return `${logPrefix(ts, "FAIL")}${RED}✗${RESET} ${BOLD}${event.workflow_id}${RESET} failed after ${formatDuration(event.duration_ms)}`;
 		case "step_start":
-			return `  ${YELLOW}⟳${RESET} ${event.step_id}`;
+			return `${logPrefix(ts, "INFO")}  ${YELLOW}⟳${RESET} ${event.step_id}`;
 		case "step_complete":
-			return `  ${GREEN}✓${RESET} ${event.step_id.padEnd(20)} ${DIM}${formatDuration(event.duration_ms)}${RESET}`;
+			return `${logPrefix(ts, "INFO")}  ${GREEN}✓${RESET} ${event.step_id.padEnd(20)} ${DIM}${formatDuration(event.duration_ms)}${RESET}`;
 		case "step_error":
-			return `  ${RED}✗${RESET} ${event.step_id.padEnd(20)} ${DIM}${formatDuration(event.duration_ms)}${RESET}  ${RED}${formatStepErrorBrief(event.error)}${RESET}`;
+			return `${logPrefix(ts, "FAIL")}  ${RED}✗${RESET} ${event.step_id.padEnd(20)} ${DIM}${formatDuration(event.duration_ms)}${RESET}  ${RED}${formatStepErrorBrief(event.error)}${RESET}`;
 		case "step_skipped":
-			return `  ${GRAY}⊘ ${event.step_id}${RESET} ${DIM}skipped: ${event.reason}${RESET}`;
+			return `${logPrefix(ts, "WARN")}  ${GRAY}⊘ ${event.step_id}${RESET} ${DIM}skipped: ${event.reason}${RESET}`;
 		case "checkpoint_waiting":
-			return `  ${YELLOW}⏸${RESET} ${event.step_id} waiting: ${event.prompt}`;
+			return `${logPrefix(ts, "WARN")}  ${YELLOW}⏸${RESET} ${event.step_id} waiting: ${event.prompt}`;
 		case "checkpoint_resolved":
-			return `  ${GREEN}▶${RESET} ${event.step_id} checkpoint resolved`;
+			return `${logPrefix(ts, "INFO")}  ${GREEN}▶${RESET} ${event.step_id} checkpoint resolved`;
 		case "agent_session_created":
-			return `    ${DIM}session ${event.session.id.slice(0, 12)}${RESET}`;
+			return `${logPrefix(ts, "INFO")}    ${DIM}session ${event.session.id.slice(0, 12)}${RESET}`;
 		case "agent_prompt_sent": {
 			const preview = event.text.replace(/\n/g, " ").slice(0, 120);
-			return `    ${CYAN}→${RESET} ${DIM}${preview}${event.text.length > 120 ? "..." : ""}${RESET}`;
+			return `${logPrefix(ts, "INFO")}    ${CYAN}→${RESET} ${DIM}${preview}${event.text.length > 120 ? "..." : ""}${RESET}`;
 		}
 		case "agent_text": {
 			const text = event.text.trim();
 			if (!text) return null;
 			const max_len = 500;
 			const truncated = text.length > max_len ? text.slice(0, max_len) + "..." : text;
+			const prefix = logPrefix(ts, "INFO");
 			const indented = truncated
 				.split("\n")
-				.map((line) => `    ${line}`)
+				.map((line) => `${prefix}    ${line}`)
 				.join("\n");
-			return `    ${CYAN}▍${RESET}\n${indented}`;
+			return indented;
 		}
 		case "agent_tool_call":
 			return null;
@@ -257,7 +285,7 @@ export function formatStepEvent(event: TraceEvent): string | null {
 			const meta = event.response.metadata;
 			const tool_count = meta.tool_calls?.length ?? 0;
 			const tool_info = tool_count > 0 ? ` (${tool_count} tool calls)` : "";
-			return `    ${DIM}completed in ${formatDuration(meta.duration_ms)}${tool_info}${RESET}`;
+			return `${logPrefix(ts, "INFO")}    ${DIM}completed in ${formatDuration(meta.duration_ms)}${tool_info}${RESET}`;
 		}
 	}
 }
