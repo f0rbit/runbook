@@ -48,6 +48,7 @@
       "dependencies": {
         "@f0rbit/corpus": "^0.3",
         "@f0rbit/runbook": "workspace:*",
+        "@f0rbit/runbook-git-store": "workspace:*",
         "@opencode-ai/sdk": "*",
         "hono": "^4",
         "zod": "^3",

@@ -1,4 +1,5 @@
 import type { Workflow } from "@f0rbit/runbook";
+import type { GitArtifactStore } from "@f0rbit/runbook-git-store";
 import { Hono } from "hono";
 import type { Engine } from "./engine";
 import { healthRoutes } from "./routes/health";
@@ -10,6 +11,7 @@ export type ServerDeps = {
 	engine: Engine;
 	state: RunStateStore;
 	workflows: Map<string, Workflow<any, any>>;
+	git_store?: GitArtifactStore;
 };
 
 export function createServer(deps: ServerDeps) {

@@ -7,6 +7,7 @@
   "types": "src/index.ts",
   "dependencies": {
     "@f0rbit/runbook": "workspace:*",
+    "@f0rbit/runbook-git-store": "workspace:*",
     "@f0rbit/corpus": "^0.3",
     "@opencode-ai/sdk": "*",
     "hono": "^4",

@@ -1,4 +1,5 @@
 import type { TraceEvent, Workflow } from "@f0rbit/runbook";
+import type { GitArtifactStore, StorableRun } from "@f0rbit/runbook-git-store";
 import { Hono } from "hono";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Engine } from "../engine";
@@ -9,6 +10,7 @@ export type WorkflowDeps = {
 	engine: Engine;
 	state: RunStateStore;
 	workflows: Map<string, Workflow<any, any>>;
+	git_store?: GitArtifactStore;
 };
 
 export function workflowRoutes(deps: WorkflowDeps) {
@@ -108,6 +110,23 @@ function executeRunAsync(deps: WorkflowDeps, workflow: Workflow<any, any>, input
 					trace: result.value.trace,
 					completed_at: new Date(),
 				});
+			}
+
+			if (deps.git_store && !already_cancelled) {
+				const final_run = deps.state.get(run_id);
+				if (final_run) {
+					const storable: StorableRun = {
+						run_id,
+						workflow_id: workflow.id,
+						input,
+						output: final_run.output,
+						trace: final_run.trace,
+						duration_ms: final_run.trace.duration_ms,
+					};
+					deps.git_store.store(storable).then((r) => {
+						if (!r.ok) console.error(`[runbook] git-store write failed for ${run_id}:`, r.error);
+					});
+				}
 			}
 		});
 }
