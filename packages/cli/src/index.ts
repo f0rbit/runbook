@@ -66,7 +66,7 @@ switch (cmd) {
 		await handleHistory(rest);
 		break;
 	case "show":
-		await handleShow(rest);
+		await handleShow(rest, getBaseUrl(args));
 		break;
 	case "diff":
 		await handleDiff(rest);
