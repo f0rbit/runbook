@@ -529,6 +529,7 @@ export type {
 	ProviderConfig,
 	RunbookConfig,
 	RunResult,
+	RunSnapshot,
 	RunState,
 	ServerConfig,
 	ShellError,
@@ -591,6 +592,7 @@ import { handleHistory } from "./commands/history";
 import { handleList } from "./commands/list";
 import { handlePull } from "./commands/pull";
 import { handlePush } from "./commands/push";
+import { handleResume } from "./commands/resume";
 import { handleRun } from "./commands/run";
 import { handleServe } from "./commands/serve";
 import { handleShow } from "./commands/show";
@@ -619,6 +621,7 @@ Commands:
   diff <run-id-1> <run-id-2>   Diff two stored runs
   push [--remote origin]       Push artifact refs to remote
   cancel [run-id]              Cancel a running workflow
+  resume <run-id>              Resume a checkpoint-paused run
   pull [--remote origin]       Pull artifact refs from remote
 
 Options:
@@ -661,6 +664,9 @@ switch (cmd) {
 		break;
 	case "cancel":
 		await handleCancel(rest, getBaseUrl(args));
+		break;
+	case "resume":
+		await handleResume(rest, getBaseUrl(args));
 		break;
 	case "pull":
 		await handlePull(rest);
@@ -725,72 +731,32 @@ Options:
 
 # Documentation
 
-## @f0rbit/runbook (index.mdx)
+## " (index.mdx)
 
-# @f0rbit/runbook
+import Hero from '../../components/landing/Hero.astro';
+import FeatureGrid from '../../components/landing/FeatureGrid.astro';
+import QuickStart from '../../components/landing/QuickStart.astro';
+import NextSteps from '../../components/landing/NextSteps.astro';
+import ScrollProgress from '../../components/landing/ScrollProgress.astro';
 
-### Typed workflow engine for orchestrating AI agents, shell commands, and human checkpoints
+<ScrollProgress />
+<div class="landing-page">
+  <Hero />
+  <FeatureGrid />
+  <QuickStart />
+  <NextSteps />
+</div>
 
-Define workflows as typed pipelines. Wire AI agents, shell commands, and human checkpoints into composable steps — with Zod schemas enforcing correctness at every boundary.
-
----
-
-## Features
-
-### Type Safety
-
-Zod schemas at every step boundary. Mis-wired pipelines fail at compile time, not runtime.
-
-### Agent Steps
-
-AI agents as first-class workflow steps with typed I/O. Analyze mode for JSON output, build mode for code generation.
-
-### Testable
-
-In-memory providers for instant, deterministic tests. No mocking, no network calls, no API costs.
-
-### Traces
-
-Typed event streams, not string logs. 14 event types covering workflow lifecycle, agent sessions, and checkpoints.
-
-### Git Store
-
-Every prompt, response, and tool call stored in git refs. Invisible to `git log`, pushable/pullable.
-
-### Composable
-
-`pipe()`, `parallel()`, `asStep()`. Build complex workflows from simple, reusable pieces.
-
----
-
-## Quick Example
-
-A minimal workflow that dispatches to an AI agent with fully typed input and output:
-
-```typescript
-import { agent, defineWorkflow } from "@f0rbit/runbook";
-import { z } from "zod";
-
-const analyze = agent({
-  id: "analyze",
-  input: z.object({ code: z.string() }),
-  output: z.object({ issues: z.array(z.string()), severity: z.enum(["low", "medium", "high"]) }),
-  prompt: (input) => `Analyze this code:\n${input.code}`,
-});
-
-const workflow = defineWorkflow(z.object({ code: z.string() }))
-  .pipe(analyze, (wf) => ({ code: wf.code }))
-  .done("code-review", z.object({ issues: z.array(z.string()), severity: z.enum(["low", "medium", "high"]) }));
-```
-
----
-
-## Learn More
-
-- [Get Started](/runbook/getting-started/installation/) — Install and set up
-- [Quick Start](/runbook/getting-started/quick-start/) — Build your first workflow
-- [Concepts](/runbook/concepts/steps/) — Learn the fundamentals
-- [API Reference](/runbook/packages/core/) — Full package documentation
+<style>{`
+  .landing-page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    max-width: 1000px;
+    margin: 0 auto;
+  }
+`}</style>
 
 ---
 
@@ -1180,6 +1146,15 @@ Absolute paths are used as-is.
 
 ---
 
+## Related
+
+- [Config Files Guide](/runbook/guides/config-files/) — practical guide to config file setup and patterns
+- [Providers](/runbook/concepts/providers/) — provider interfaces configured via `providers` field
+- [`@f0rbit/runbook-cli`](/runbook/packages/cli/) — CLI config discovery behavior
+- [Agent Steps Guide](/runbook/guides/agent-steps/) — `system_prompt_file` and `working_directory` usage
+
+---
+
 ## Providers (concepts/providers.mdx)
 
 # Providers
@@ -1474,6 +1449,15 @@ No mocking — the Provider pattern replaces all external dependencies with real
 
 ---
 
+## Related
+
+- [Steps](/runbook/concepts/steps/) — the step types that dispatch to providers
+- [Testing Guide](/runbook/guides/testing/) — using in-memory providers for deterministic tests
+- [`@f0rbit/runbook-server`](/runbook/packages/server/) — server package where production providers live
+- [`@f0rbit/runbook/test`](/runbook/packages/core/#test-providers) — test provider exports
+
+---
+
 ## Steps (concepts/steps.mdx)
 
 # Steps
@@ -1734,6 +1718,15 @@ const workflow = defineWorkflow(z.object({ plan: z.string() }))
 ```
 
 The checkpoint output replaces the previous step output in the pipeline. If you need to carry data forward across a checkpoint boundary, use a module-level closure or a `fn()` step to capture it.
+
+---
+
+## Related
+
+- [Workflows](/runbook/concepts/workflows/) — compose steps into typed pipelines with `pipe()` and `parallel()`
+- [Providers](/runbook/concepts/providers/) — the provider interfaces that steps dispatch to
+- [Testing Guide](/runbook/guides/testing/) — test workflows with in-memory providers
+- [Agent Steps Guide](/runbook/guides/agent-steps/) — deep dive into agent step configuration
 
 ---
 
@@ -2078,6 +2071,14 @@ if (result.ok) {
 
 ---
 
+## Related
+
+- [Git Artifact Store](/runbook/guides/git-artifact-store/) — persist traces as git objects
+- [`@f0rbit/runbook`](/runbook/packages/core/) — `TraceCollector` and `TraceEvent` exports
+- [Architecture](/runbook/resources/architecture/) — how traces fit into the system
+
+---
+
 ## Workflows (concepts/workflows.mdx)
 
 # Workflows
@@ -2277,6 +2278,15 @@ if (result.ok) {
 ```
 
 Results use `Result<T, E>` from `@f0rbit/corpus`. No exceptions — errors are values.
+
+---
+
+## Related
+
+- [Steps](/runbook/concepts/steps/) — reference for all four step types
+- [Providers](/runbook/concepts/providers/) — provider interfaces the engine dispatches to
+- [Configuration](/runbook/concepts/configuration/) — config file format and `defineConfig()`
+- [`@f0rbit/runbook`](/runbook/packages/core/) — full SDK API reference
 
 ---
 
@@ -2553,6 +2563,15 @@ The `pipe()` mapper receives `(workflow_input, previous_step_output)` — both f
 
 ---
 
+## Related
+
+- [Steps](/runbook/concepts/steps/) — reference for all four step types including `agent()`
+- [Providers](/runbook/concepts/providers/) — `AgentExecutor` interface details
+- [Testing Guide](/runbook/guides/testing/) — testing agent steps with `InMemoryAgentExecutor`
+- [`@f0rbit/runbook`](/runbook/packages/core/) — full API reference for agent types
+
+---
+
 ## Configuration (guides/config-files.mdx)
 
 ## Config File Structure
@@ -2642,7 +2661,7 @@ The `resolveProviders(config)` function in the server package creates real provi
 }
 ```
 
-When enabled, every workflow run is automatically stored as git objects under `refs/runbook/runs/`. See the [Git Artifact Store](/guides/git-artifact-store) guide.
+When enabled, every workflow run is automatically stored as git objects under `refs/runbook/runs/`. See the [Git Artifact Store](/runbook/guides/git-artifact-store/) guide.
 
 ### working_directory
 
@@ -2778,6 +2797,15 @@ export default defineConfig({
   },
 });
 ```
+
+---
+
+## Related
+
+- [Configuration](/runbook/concepts/configuration/) — conceptual overview of config format
+- [Providers](/runbook/concepts/providers/) — provider types configured via `providers` field
+- [`@f0rbit/runbook-cli`](/runbook/packages/cli/) — CLI config discovery and `--config` flag
+- [Agent Steps Guide](/runbook/guides/agent-steps/) — `system_prompt_file` referenced from config
 
 ---
 
@@ -2929,6 +2957,15 @@ export default defineConfig({
 ```
 
 When enabled, the server automatically stores every workflow run after completion.
+
+---
+
+## Related
+
+- [`@f0rbit/runbook-git-store`](/runbook/packages/git-store/) — full API reference
+- [Traces](/runbook/concepts/traces/) — trace data that gets stored
+- [`@f0rbit/runbook-cli`](/runbook/packages/cli/) — CLI commands (`history`, `show`, `diff`, `push`, `pull`)
+- [Config Files Guide](/runbook/guides/config-files/) — enabling git artifacts in config
 
 ---
 
@@ -3169,6 +3206,14 @@ test("POST /workflows/:id/run", async () => {
 
 ---
 
+## Related
+
+- [Providers](/runbook/concepts/providers/) — the provider interfaces and their in-memory implementations
+- [`@f0rbit/runbook/test`](/runbook/packages/core/#test-providers) — test provider API reference
+- [Steps](/runbook/concepts/steps/) — step types that providers execute
+
+---
+
 ## @f0rbit/runbook-cli (packages/cli.mdx)
 
 The CLI package provides the `runbook` command. Published as `@f0rbit/runbook-cli` on npm.
@@ -3377,6 +3422,15 @@ export default defineConfig({
   workflows: [myWorkflow, anotherWorkflow],
 });
 ```
+
+---
+
+## Related
+
+- [Configuration](/runbook/concepts/configuration/) — config file format and discovery rules
+- [Config Files Guide](/runbook/guides/config-files/) — practical config patterns
+- [`@f0rbit/runbook-server`](/runbook/packages/server/) — server that the CLI connects to
+- [Git Artifact Store](/runbook/guides/git-artifact-store/) — `history`, `show`, `diff`, `push`, `pull` commands
 
 ---
 
@@ -3732,6 +3786,15 @@ checkpoints.prompted; // Array of { prompt, step_id }
 
 ---
 
+## Related
+
+- [Steps](/runbook/concepts/steps/) — conceptual guide to the four step types
+- [Workflows](/runbook/concepts/workflows/) — how to compose steps into pipelines
+- [Testing Guide](/runbook/guides/testing/) — using the `@f0rbit/runbook/test` providers
+- [`@f0rbit/runbook-server`](/runbook/packages/server/) — engine and production providers
+
+---
+
 ## @f0rbit/runbook-git-store (packages/git-store.mdx)
 
 Git-based artifact store for workflow traces and agent sessions. Published as `@f0rbit/runbook-git-store` on npm.
@@ -4008,6 +4071,14 @@ This approach gives you:
 
 ---
 
+## Related
+
+- [Git Artifact Store Guide](/runbook/guides/git-artifact-store/) — practical usage guide
+- [Traces](/runbook/concepts/traces/) — the trace data stored by this package
+- [`@f0rbit/runbook-cli`](/runbook/packages/cli/) — CLI commands for browsing stored runs
+
+---
+
 ## @f0rbit/runbook-server (packages/server.mdx)
 
 The server package runs the workflow execution engine and exposes an HTTP API. Published as `@f0rbit/runbook-server` on npm.
@@ -4249,6 +4320,15 @@ Interface for run state persistence:
 
 ---
 
+## Related
+
+- [Providers](/runbook/concepts/providers/) — provider interfaces implemented in this package
+- [Architecture](/runbook/resources/architecture/) — system architecture and engine dispatch flow
+- [`@f0rbit/runbook`](/runbook/packages/core/) — core SDK with step builders and types
+- [`@f0rbit/runbook-cli`](/runbook/packages/cli/) — CLI that connects to this server
+
+---
+
 ## Comparisons (use-cases/comparisons.mdx)
 
 # Comparisons
@@ -4362,6 +4442,14 @@ Building your own with Zod + fetch + Bun.spawn.
 **When to build custom:** You have exactly one workflow with unique constraints that don't fit Runbook's step model.
 
 **When to use Runbook:** You have multiple workflows, need structured traces, want testability without mocking, or expect to add more agent-powered pipelines over time.
+
+---
+
+## Related
+
+- [Use Cases](/runbook/use-cases/overview/) — real-world workflow patterns
+- [Getting Started](/runbook/getting-started/installation/) — install and try it
+- [Testing Guide](/runbook/guides/testing/) — the in-memory testing approach referenced in comparisons
 
 ---
 
@@ -4519,6 +4607,15 @@ Shell steps collect logs and metrics. Agent steps analyze root cause and draft a
 **Platform engineers** — Standardize agent workflow definitions, testing, and auditing across teams. The Provider pattern means workflows are portable — swap executors without changing workflow code.
 
 **Solo developers** — Automate multi-step coding workflows with structured output and traceability. Run locally on Bun with a single server process — no cluster, no cloud, no YAML.
+
+---
+
+## Related
+
+- [Getting Started](/runbook/getting-started/installation/) — install and set up
+- [Comparisons](/runbook/use-cases/comparisons/) — how Runbook compares to alternatives
+- [Steps](/runbook/concepts/steps/) — the four step types used in these examples
+- [Architecture](/runbook/resources/architecture/) — system design overview
 
 ---
 
@@ -4750,6 +4847,15 @@ The `AgentExecutor` interface is intentionally minimal — `createSession` and `
 
 ---
 
+## Related
+
+- [Providers](/runbook/concepts/providers/) — provider interfaces in detail
+- [Traces](/runbook/concepts/traces/) — trace event types reference
+- [`@f0rbit/runbook-server`](/runbook/packages/server/) — server package API
+- [`@f0rbit/runbook`](/runbook/packages/core/) — core SDK API
+
+---
+
 ## LLM Docs (resources/llms.mdx)
 
 # LLM-Friendly Documentation
@@ -4816,6 +4922,13 @@ These files are generated automatically during the docs build process from:
 - All documentation pages (`docs/src/content/docs/**/*.mdx`)
 
 The generation script runs before each Astro build, ensuring the LLM docs stay in sync with the documentation site.
+
+---
+
+## Related
+
+- [Getting Started](/runbook/getting-started/installation/) — install and set up
+- [Architecture](/runbook/resources/architecture/) — system design overview
 
 ---
 
