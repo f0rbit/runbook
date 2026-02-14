@@ -83,6 +83,8 @@ export class OpenCodeExecutor implements AgentExecutor {
 					parts: [{ type: "text" as const, text: opts.text }],
 					...(opts.model ? { model: { providerID: opts.model.provider_id, modelID: opts.model.model_id } } : {}),
 					...(opts.agent_type ? { agent: opts.agent_type } : {}),
+					// runbook agent sessions are non-interactive — human input uses checkpoint steps
+					tools: { question: false },
 				},
 			});
 
