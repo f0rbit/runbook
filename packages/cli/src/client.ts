@@ -12,7 +12,7 @@ export type WorkflowInfo = {
 export type RunInfo = {
 	run_id: string;
 	workflow_id: string;
-	status: "pending" | "running" | "success" | "failure";
+	status: "pending" | "running" | "success" | "failure" | "cancelled";
 	input: unknown;
 	output?: unknown;
 	error?: unknown;

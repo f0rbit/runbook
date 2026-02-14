@@ -23,6 +23,8 @@ function statusColor(status: string): string {
 			return RED;
 		case "running":
 			return YELLOW;
+		case "cancelled":
+			return YELLOW;
 		default:
 			return GRAY;
 	}
@@ -36,6 +38,8 @@ function statusIcon(status: string): string {
 			return `${RED}✗${RESET}`;
 		case "running":
 			return `${YELLOW}⟳${RESET}`;
+		case "cancelled":
+			return `${YELLOW}⊘${RESET}`;
 		default:
 			return `${GRAY}○${RESET}`;
 	}

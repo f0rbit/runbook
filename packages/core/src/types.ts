@@ -84,6 +84,7 @@ export type PromptOpts = {
 	model?: { provider_id: string; model_id: string };
 	agent_type?: string;
 	timeout_ms?: number;
+	signal?: AbortSignal;
 };
 
 export type AgentToolCall = {
@@ -264,7 +265,7 @@ export type PendingCheckpoint = {
 export type RunState = {
 	run_id: string;
 	workflow_id: string;
-	status: "pending" | "running" | "success" | "failure";
+	status: "pending" | "running" | "success" | "failure" | "cancelled";
 	input: unknown;
 	output?: unknown;
 	error?: WorkflowError;

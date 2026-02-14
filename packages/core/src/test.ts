@@ -19,6 +19,7 @@ import type {
 export class InMemoryShellProvider implements ShellProvider {
 	private responses: Array<{ pattern: RegExp; result: ShellResult }> = [];
 	executed: Array<{ command: string; opts?: ShellOpts }> = [];
+	exec_delay_ms = 0;
 
 	on(pattern: RegExp | string, result: Partial<ShellResult> & { stdout: string }): void {
 		this.responses.push({
@@ -29,6 +30,22 @@ export class InMemoryShellProvider implements ShellProvider {
 
 	async exec(command: string, opts?: ShellOpts): Promise<Result<ShellResult, ShellError>> {
 		this.executed.push({ command, opts });
+		if (this.exec_delay_ms > 0) {
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(resolve, this.exec_delay_ms);
+				opts?.signal?.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						reject(new Error("aborted"));
+					},
+					{ once: true },
+				);
+			}).catch(() => {});
+			if (opts?.signal?.aborted) {
+				return err({ kind: "shell_spawn_error", command, cause: "aborted" });
+			}
+		}
 		const match = this.responses.find((r) => r.pattern.test(command));
 		if (!match) return err({ kind: "shell_spawn_error", command, cause: "no scripted response" });
 		return ok(match.result);
@@ -40,6 +57,8 @@ export class InMemoryAgentExecutor implements AgentExecutor {
 	private sessions: Map<string, { title?: string }> = new Map();
 	prompted: Array<{ session_id: string; opts: PromptOpts }> = [];
 	created_sessions: Array<{ id: string; opts: CreateSessionOpts }> = [];
+	destroyed_sessions: string[] = [];
+	prompt_delay_ms = 0;
 	private next_session_id = 1;
 
 	on(pattern: RegExp | string, response: Partial<AgentResponse> & { text: string }): void {
@@ -62,12 +81,29 @@ export class InMemoryAgentExecutor implements AgentExecutor {
 
 	async prompt(session_id: string, opts: PromptOpts): Promise<Result<AgentResponse, AgentError>> {
 		this.prompted.push({ session_id, opts });
+		if (this.prompt_delay_ms > 0) {
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(resolve, this.prompt_delay_ms);
+				opts.signal?.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						reject(new Error("aborted"));
+					},
+					{ once: true },
+				);
+			}).catch(() => {});
+			if (opts.signal?.aborted) {
+				return err({ kind: "prompt_failed", session_id, cause: "aborted" });
+			}
+		}
 		const match = this.responses.find((r) => r.pattern.test(opts.text));
 		if (!match) return err({ kind: "prompt_failed", session_id, cause: "no scripted response" });
 		return ok({ ...match.response, session_id });
 	}
 
-	async destroySession(_session_id: string): Promise<Result<void, AgentError>> {
+	async destroySession(session_id: string): Promise<Result<void, AgentError>> {
+		this.destroyed_sessions.push(session_id);
 		return ok(undefined);
 	}
 
