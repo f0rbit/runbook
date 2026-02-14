@@ -2,6 +2,7 @@ import type { TraceEvent, Workflow } from "@f0rbit/runbook";
 import { Hono } from "hono";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Engine } from "../engine";
+import { createServerCheckpointProvider } from "../providers/checkpoint";
 import type { RunStateStore } from "../state";
 
 export type WorkflowDeps = {
@@ -52,10 +53,20 @@ function executeRunAsync(deps: WorkflowDeps, workflow: Workflow<any, any>, input
 
 	deps.state.update(run_id, { status: "running" });
 
+	const checkpoint = createServerCheckpointProvider({
+		register: (checkpoint_id, pending) => {
+			const run = deps.state.get(run_id);
+			if (run) {
+				run.pending_checkpoints.set(checkpoint_id, pending);
+			}
+		},
+	});
+
 	deps.engine
 		.run(workflow, input, {
 			run_id,
 			signal: controller.signal,
+			checkpoint,
 			on_trace: (event: TraceEvent) => {
 				trace_events.push(event);
 				const run = deps.state.get(run_id);

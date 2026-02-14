@@ -35,6 +35,7 @@ export type RunOpts = {
 	run_id?: string;
 	signal?: AbortSignal;
 	on_trace?: (event: TraceEvent) => void;
+	checkpoint?: CheckpointProvider;
 };
 
 export type Engine = {
@@ -46,6 +47,10 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 		async run<I, O>(workflow: Workflow<I, O>, input: I, opts?: RunOpts): Promise<Result<RunResult<O>, WorkflowError>> {
 			const run_id = opts?.run_id ?? crypto.randomUUID();
 			const trace = new TraceCollector();
+
+			const effective_opts: EngineOpts = opts?.checkpoint
+				? { ...engine_opts, providers: { ...engine_opts.providers, checkpoint: opts.checkpoint } }
+				: engine_opts;
 
 			if (opts?.on_trace) {
 				trace.onEvent(opts.on_trace);
@@ -102,7 +107,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 							signal: opts?.signal ?? new AbortController().signal,
 							engine,
 						},
-						engine_opts,
+						effective_opts,
 					);
 
 					if (!result.ok) {
@@ -142,7 +147,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 								signal: parallel_controller.signal,
 								engine,
 							},
-							engine_opts,
+							effective_opts,
 						);
 						if (!result.ok) {
 							parallel_controller.abort();
