@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join, relative } from "path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const docsDir = join(scriptDir, "..");

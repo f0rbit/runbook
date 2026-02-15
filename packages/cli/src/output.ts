@@ -132,7 +132,7 @@ type StepSummary = {
 	error_cause?: string;
 };
 
-function buildStepSummaries(events: TraceEvent[]): StepSummary[] {
+function _buildStepSummaries(events: TraceEvent[]): StepSummary[] {
 	const summaries: StepSummary[] = [];
 	const seen = new Set<string>();
 
@@ -269,7 +269,7 @@ export function formatStepEvent(event: TraceEvent): string | null {
 			const text = event.text.trim();
 			if (!text) return null;
 			const max_len = 500;
-			const truncated = text.length > max_len ? text.slice(0, max_len) + "..." : text;
+			const truncated = text.length > max_len ? `${text.slice(0, max_len)}...` : text;
 			const prefix = logPrefix(ts, "INFO");
 			const indented = truncated
 				.split("\n")

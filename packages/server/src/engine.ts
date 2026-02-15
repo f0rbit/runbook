@@ -313,7 +313,7 @@ async function executeStep(
 		working_directory: ctx_base.working_directory,
 	};
 
-	let result: Result<unknown, StepError>;
+	let result: Result<unknown, StepError> = err(errors.execution(step.id, "unreachable: no step kind matched"));
 
 	switch (step.kind.kind) {
 		case "fn": {
@@ -377,8 +377,8 @@ async function executeStep(
 		}
 	}
 
-	if (result!.ok) {
-		const output_parsed = step.output.safeParse(result!.value);
+	if (result.ok) {
+		const output_parsed = step.output.safeParse(result.value);
 		if (!output_parsed.success) {
 			const err_result = errors.validation(step.id, output_parsed.error.issues);
 			ctx_base.trace.emit({
@@ -403,11 +403,11 @@ async function executeStep(
 	ctx_base.trace.emit({
 		type: "step_error",
 		step_id: step.id,
-		error: result!.error,
+		error: result.error,
 		duration_ms: Date.now() - step_started,
 		timestamp: new Date(),
 	});
-	return result!;
+	return result;
 }
 
 async function executeAgentStep(

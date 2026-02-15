@@ -1,7 +1,7 @@
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
 import { ok } from "@f0rbit/corpus";
 import { agent, defineWorkflow, shell } from "@f0rbit/runbook";
 import { InMemoryAgentExecutor, InMemoryShellProvider } from "@f0rbit/runbook/test";
@@ -45,8 +45,8 @@ describe("engine enhancements", () => {
 			expect(session_opts.system_prompt).toContain("You are a helpful assistant.");
 			expect(session_opts.system_prompt).toContain("Additional instructions.");
 			// File content should come first
-			const file_idx = session_opts.system_prompt!.indexOf("You are a helpful assistant.");
-			const inline_idx = session_opts.system_prompt!.indexOf("Additional instructions.");
+			const file_idx = session_opts.system_prompt?.indexOf("You are a helpful assistant.") ?? -1;
+			const inline_idx = session_opts.system_prompt?.indexOf("Additional instructions.") ?? -1;
 			expect(file_idx).toBeLessThan(inline_idx);
 		});
 
@@ -126,7 +126,7 @@ describe("engine enhancements", () => {
 				prompt: (input) => input.task,
 				mode: "analyze",
 				agent_opts: {
-					system_prompt_file: "my-prompt.md",  // relative path
+					system_prompt_file: "my-prompt.md", // relative path
 				},
 			});
 
@@ -136,7 +136,7 @@ describe("engine enhancements", () => {
 
 			const engine = createEngine({
 				providers: { agent: agent_executor },
-				working_directory: tmp,  // resolve relative to this
+				working_directory: tmp, // resolve relative to this
 			});
 			const result = await engine.run(workflow, { task: "hello" });
 			expect(result.ok).toBe(true);

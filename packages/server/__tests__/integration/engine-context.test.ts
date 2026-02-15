@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ok } from "@f0rbit/corpus";
-import { defineWorkflow, fn, shell, agent } from "@f0rbit/runbook";
-import { InMemoryShellProvider, InMemoryAgentExecutor } from "@f0rbit/runbook/test";
+import { agent, defineWorkflow, fn, shell } from "@f0rbit/runbook";
+import { InMemoryAgentExecutor, InMemoryShellProvider } from "@f0rbit/runbook/test";
 import { z } from "zod";
 import { createEngine } from "../../src/engine";
 
@@ -29,7 +29,10 @@ describe("ctx.engine — sub-workflow execution", () => {
 			run: async (input, ctx) => {
 				const result = await ctx.engine.run(inner_workflow, { cmd: `echo ${input.task}` });
 				if (!result.ok) {
-					return { ok: false as const, error: { kind: "execution_error" as const, step_id: ctx.step_id, cause: "sub-workflow failed" } };
+					return {
+						ok: false as const,
+						error: { kind: "execution_error" as const, step_id: ctx.step_id, cause: "sub-workflow failed" },
+					};
 				}
 				return ok(result.value.output);
 			},
@@ -75,7 +78,10 @@ describe("ctx.engine — sub-workflow execution", () => {
 			run: async (input, ctx) => {
 				const result = await ctx.engine.run(inner_workflow, { question: input.q });
 				if (!result.ok) {
-					return { ok: false as const, error: { kind: "execution_error" as const, step_id: ctx.step_id, cause: "sub failed" } };
+					return {
+						ok: false as const,
+						error: { kind: "execution_error" as const, step_id: ctx.step_id, cause: "sub failed" },
+					};
 				}
 				return ok(result.value.output);
 			},
@@ -119,7 +125,11 @@ describe("ctx.engine — sub-workflow execution", () => {
 			output: z.object({ value: z.string() }),
 			run: async (_input, ctx) => {
 				const result = await ctx.engine.run(leaf_wf, {});
-				if (!result.ok) return { ok: false as const, error: { kind: "execution_error" as const, step_id: "mid", cause: "leaf failed" } };
+				if (!result.ok)
+					return {
+						ok: false as const,
+						error: { kind: "execution_error" as const, step_id: "mid", cause: "leaf failed" },
+					};
 				return ok(result.value.output);
 			},
 		});
@@ -134,7 +144,11 @@ describe("ctx.engine — sub-workflow execution", () => {
 			output: z.object({ value: z.string() }),
 			run: async (_input, ctx) => {
 				const result = await ctx.engine.run(mid_wf, {});
-				if (!result.ok) return { ok: false as const, error: { kind: "execution_error" as const, step_id: "top", cause: "mid failed" } };
+				if (!result.ok)
+					return {
+						ok: false as const,
+						error: { kind: "execution_error" as const, step_id: "top", cause: "mid failed" },
+					};
 				return ok(result.value.output);
 			},
 		});
@@ -184,10 +198,7 @@ describe("ctx.engine — sub-workflow execution", () => {
 		});
 
 		const inner_wf = defineWorkflow(z.object({}))
-			.parallel(
-				[tc_step, () => ({})] as const,
-				[test_step, () => ({})] as const,
-			)
+			.parallel([tc_step, () => ({})] as const, [test_step, () => ({})] as const)
 			.pipe(merge, (_wi, prev) => prev)
 			.done("parallel_inner", z.object({ combined: z.string() }));
 
@@ -197,7 +208,11 @@ describe("ctx.engine — sub-workflow execution", () => {
 			output: z.object({ combined: z.string() }),
 			run: async (_input, ctx) => {
 				const result = await ctx.engine.run(inner_wf, {});
-				if (!result.ok) return { ok: false as const, error: { kind: "execution_error" as const, step_id: "run_verify", cause: "inner failed" } };
+				if (!result.ok)
+					return {
+						ok: false as const,
+						error: { kind: "execution_error" as const, step_id: "run_verify", cause: "inner failed" },
+					};
 				return ok(result.value.output);
 			},
 		});
