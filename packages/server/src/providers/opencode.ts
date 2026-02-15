@@ -45,9 +45,16 @@ export class OpenCodeExecutor implements AgentExecutor {
 
 	async createSession(opts: CreateSessionOpts): Promise<Result<AgentSession, AgentError>> {
 		try {
+			// runbook agent sessions are non-interactive — human input uses checkpoint steps
+			const base_permissions = opts.permissions ?? [];
+			const session_permissions = [
+				...base_permissions,
+				{ permission: "question", pattern: "*", action: "deny" as const },
+			];
+
 			const result = await this.client.session.create({
 				title: opts.title ?? "runbook-session",
-				...(opts.permissions ? { permission: opts.permissions } : {}),
+				permission: session_permissions,
 				...(opts.working_directory ? { directory: opts.working_directory } : {}),
 			});
 
@@ -86,8 +93,6 @@ export class OpenCodeExecutor implements AgentExecutor {
 				...(opts.model ? { model: { providerID: opts.model.provider_id, modelID: opts.model.model_id } } : {}),
 				...(opts.agent_type ? { agent: opts.agent_type } : {}),
 				...(opts.system_prompt ? { system: opts.system_prompt } : {}),
-				// runbook agent sessions are non-interactive — human input uses checkpoint steps
-				tools: { question: false },
 			});
 
 			// Race: normal completion vs stale detection
@@ -105,20 +110,9 @@ export class OpenCodeExecutor implements AgentExecutor {
 					// Session may already be finished
 				}
 
-				// Check if stale due to pending permission request
+				// Check if stale due to pending permission request (parent + children)
 				let pending_permission: string | undefined;
-				try {
-					const perm_result = await this.client.permission.list();
-					const perms = perm_result?.data ?? perm_result;
-					if (Array.isArray(perms)) {
-						const match = perms.find((p: any) => p.sessionID === session_id);
-						if (match) pending_permission = match.permission;
-					}
-				} catch {
-					// Best effort
-				}
-
-				// Collect session activity summary for debugging
+				let pending_session_id: string | undefined;
 				let activity_summary = "";
 				try {
 					const session_result = await this.client.session.get({ sessionID: session_id });
@@ -127,20 +121,39 @@ export class OpenCodeExecutor implements AgentExecutor {
 
 					const all_sessions_result = await this.client.session.list({});
 					const all_sessions = all_sessions_result?.data ?? all_sessions_result;
-					if (Array.isArray(all_sessions)) {
-						const children = all_sessions.filter((s: any) => s.parentID === session_id);
-						if (children.length > 0) {
-							activity_summary += `\n  Child sessions: ${children.map((c: any) => `${c.id.slice(0, 12)} (${c.title?.slice(0, 40) ?? "?"})`).join(", ")}`;
+					const children = Array.isArray(all_sessions)
+						? all_sessions.filter((s: any) => s.parentID === session_id)
+						: [];
+
+					if (children.length > 0) {
+						activity_summary += `\n  Child sessions: ${children.map((c: any) => `${c.id.slice(0, 12)} (${c.title?.slice(0, 40) ?? "?"})`).join(", ")}`;
+					}
+
+					// Check permissions across entire session tree
+					const tree_ids = new Set([session_id, ...children.map((c: any) => c.id)]);
+					try {
+						const perm_result = await this.client.permission.list();
+						const perms = perm_result?.data ?? perm_result;
+						if (Array.isArray(perms)) {
+							const match = perms.find((p: any) => tree_ids.has(p.sessionID));
+							if (match) {
+								pending_permission = match.permission;
+								pending_session_id = match.sessionID;
+							}
 						}
+					} catch {
+						// Best effort
 					}
 				} catch {
 					// Best effort
 				}
 
-				const base_msg = pending_permission
-					? `Agent stalled after ${stale_timeout_ms}ms — pending permission request for "${pending_permission}" — inspect with: opencode attach ${session_id}`
-					: `Agent stalled after ${stale_timeout_ms}ms — inspect with: opencode attach ${session_id}`;
-
+				const perm_detail = pending_permission
+					? pending_session_id && pending_session_id !== session_id
+						? ` — pending permission "${pending_permission}" on child session ${pending_session_id}`
+						: ` — pending permission "${pending_permission}"`
+					: "";
+				const base_msg = `Agent stalled after ${stale_timeout_ms}ms${perm_detail} — inspect with: opencode attach ${session_id}`;
 				const cause = activity_summary ? `${base_msg}\n  ${activity_summary}` : base_msg;
 
 				// Don't destroy — leave session alive for debugging
@@ -198,7 +211,20 @@ export class OpenCodeExecutor implements AgentExecutor {
 					const perm_result = await this.client.permission.list();
 					const perms = perm_result?.data ?? perm_result;
 					if (Array.isArray(perms)) {
-						has_pending_permission = perms.some((p: any) => p.sessionID === session_id);
+						// Check parent AND child sessions for pending permissions
+						const session_ids = new Set([session_id]);
+						try {
+							const all_sessions_result = await this.client.session.list({});
+							const all_sessions = all_sessions_result?.data ?? all_sessions_result;
+							if (Array.isArray(all_sessions)) {
+								for (const s of all_sessions) {
+									if (s.parentID === session_id) session_ids.add(s.id);
+								}
+							}
+						} catch {
+							// Fall back to parent-only check
+						}
+						has_pending_permission = perms.some((p: any) => session_ids.has(p.sessionID));
 					}
 				} catch {
 					// Permission endpoint may not be available — assume no pending
