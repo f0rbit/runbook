@@ -9,6 +9,7 @@ import type { RunStateStore } from "../state";
 export type WorkflowDeps = {
 	engine: Engine;
 	state: RunStateStore;
+	// biome-ignore lint/suspicious/noExplicitAny: workflows accept arbitrary input/output types
 	workflows: Map<string, Workflow<any, any>>;
 	git_store?: GitArtifactStore;
 };
@@ -100,6 +101,7 @@ function buildSnapshot(run: RunState): RunSnapshot | null {
 
 function executeRunAsync(
 	deps: WorkflowDeps,
+	// biome-ignore lint/suspicious/noExplicitAny: workflows accept arbitrary input/output types
 	workflow: Workflow<any, any>,
 	input: unknown,
 	run_id: string,

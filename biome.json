@@ -1,5 +1,8 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.3.14/schema.json",
+  "files": {
+    "includes": ["**", "!docs/.astro", "!docs/dist", "!**/*.astro"]
+  },
   "assist": {
     "actions": {
       "source": {

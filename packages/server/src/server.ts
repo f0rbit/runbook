@@ -10,6 +10,7 @@ import type { RunStateStore } from "./state";
 export type ServerDeps = {
 	engine: Engine;
 	state: RunStateStore;
+	// biome-ignore lint/suspicious/noExplicitAny: workflows accept arbitrary input/output types
 	workflows: Map<string, Workflow<any, any>>;
 	git_store?: GitArtifactStore;
 };
