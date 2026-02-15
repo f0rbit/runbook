@@ -203,6 +203,20 @@ export class OpenCodeExecutor implements AgentExecutor {
 			if (!is_active() || signal?.aborted) return;
 
 			try {
+				// Discover child sessions — used by permission check, question auto-reject, and child activity check
+				const session_ids = new Set([session_id]);
+				let child_sessions: any[] = [];
+				try {
+					const all_sessions_result = await this.client.session.list({});
+					const all_sessions = all_sessions_result?.data ?? all_sessions_result;
+					if (Array.isArray(all_sessions)) {
+						child_sessions = all_sessions.filter((s: any) => s.parentID === session_id);
+						for (const s of child_sessions) session_ids.add(s.id);
+					}
+				} catch {
+					// Fall back to parent-only
+				}
+
 				// Check for pending permission requests — if the session is waiting
 				// for permission approval, it reports as "busy" but is actually stuck.
 				// Don't reset last_activity in that case so the stale timeout fires.
@@ -211,23 +225,29 @@ export class OpenCodeExecutor implements AgentExecutor {
 					const perm_result = await this.client.permission.list();
 					const perms = perm_result?.data ?? perm_result;
 					if (Array.isArray(perms)) {
-						// Check parent AND child sessions for pending permissions
-						const session_ids = new Set([session_id]);
-						try {
-							const all_sessions_result = await this.client.session.list({});
-							const all_sessions = all_sessions_result?.data ?? all_sessions_result;
-							if (Array.isArray(all_sessions)) {
-								for (const s of all_sessions) {
-									if (s.parentID === session_id) session_ids.add(s.id);
-								}
-							}
-						} catch {
-							// Fall back to parent-only check
-						}
 						has_pending_permission = perms.some((p: any) => session_ids.has(p.sessionID));
 					}
 				} catch {
 					// Permission endpoint may not be available — assume no pending
+				}
+
+				// Auto-reject any pending questions from this session tree
+				try {
+					const question_result = await this.client.question.list();
+					const questions = question_result?.data ?? question_result;
+					if (Array.isArray(questions)) {
+						for (const q of questions) {
+							if (session_ids.has(q.sessionID)) {
+								try {
+									await this.client.question.reject({ requestID: q.id });
+								} catch {
+									// Best effort — question may already be resolved
+								}
+							}
+						}
+					}
+				} catch {
+					// Question endpoint may not be available
 				}
 
 				// Check session status — if busy and no pending permissions, actively working
@@ -260,25 +280,14 @@ export class OpenCodeExecutor implements AgentExecutor {
 
 				// Check child sessions' activity
 				if (!has_pending_permission) {
-					try {
-						const all_sessions_result = await this.client.session.list({});
-						const all_sessions = all_sessions_result?.data ?? all_sessions_result;
-						if (Array.isArray(all_sessions)) {
-							for (const s of all_sessions) {
-								if (s.parentID === session_id) {
-									const child_updated = s.time?.updated;
-									if (child_updated) {
-										const child_ms =
-											typeof child_updated === "number" ? child_updated : new Date(child_updated).getTime();
-										if (child_ms > last_activity) {
-											last_activity = child_ms;
-										}
-									}
-								}
+					for (const s of child_sessions) {
+						const child_updated = s.time?.updated;
+						if (child_updated) {
+							const child_ms = typeof child_updated === "number" ? child_updated : new Date(child_updated).getTime();
+							if (child_ms > last_activity) {
+								last_activity = child_ms;
 							}
 						}
-					} catch {
-						// List may fail — that's ok, we still have the parent check
 					}
 				}
 			} catch {
