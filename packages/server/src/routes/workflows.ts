@@ -33,7 +33,7 @@ export function workflowRoutes(deps: WorkflowDeps) {
 			return c.json({ error: "workflow_not_found" }, 404);
 		}
 
-		const body = await c.req.json<{ input?: unknown }>();
+		const body = await c.req.json<{ input?: unknown; working_directory?: string }>();
 		const parsed = workflow.input.safeParse(body.input);
 		if (!parsed.success) {
 			return c.json({ error: "validation_error", issues: parsed.error.issues }, 400);
@@ -42,7 +42,7 @@ export function workflowRoutes(deps: WorkflowDeps) {
 		const run_id = crypto.randomUUID();
 		deps.state.create(run_id, workflow.id, parsed.data);
 
-		executeRunAsync(deps, workflow, parsed.data, run_id);
+		executeRunAsync(deps, workflow, parsed.data, run_id, undefined, body.working_directory);
 
 		return c.json({ run_id }, 202);
 	});
@@ -59,6 +59,8 @@ export function workflowRoutes(deps: WorkflowDeps) {
 			return c.json({ error: "run_not_found" }, 404);
 		}
 
+		const body = await c.req.json<{ working_directory?: string }>().catch((): { working_directory?: string } => ({}));
+
 		const snapshot = buildSnapshot(existing_run);
 		if (!snapshot) {
 			return c.json({ error: "no_checkpoint_found", message: "Run has no checkpoint to resume from" }, 409);
@@ -67,7 +69,7 @@ export function workflowRoutes(deps: WorkflowDeps) {
 		const new_run_id = crypto.randomUUID();
 		deps.state.create(new_run_id, workflow.id, existing_run.input);
 
-		executeRunAsync(deps, workflow, existing_run.input, new_run_id, snapshot);
+		executeRunAsync(deps, workflow, existing_run.input, new_run_id, snapshot, body.working_directory);
 
 		return c.json({ run_id: new_run_id, resumed_from: run_id }, 202);
 	});
@@ -106,6 +108,7 @@ function executeRunAsync(
 	input: unknown,
 	run_id: string,
 	snapshot?: RunSnapshot,
+	working_directory?: string,
 ) {
 	const trace_events: TraceEvent[] = [];
 	const controller = deps.state.createController(run_id);
@@ -127,6 +130,7 @@ function executeRunAsync(
 			signal: controller.signal,
 			checkpoint,
 			snapshot,
+			working_directory,
 			on_trace: (event: TraceEvent) => {
 				trace_events.push(event);
 				const run = deps.state.get(run_id);

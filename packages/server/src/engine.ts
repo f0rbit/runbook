@@ -39,6 +39,8 @@ export type RunOpts = {
 	checkpoint?: CheckpointProvider;
 	/** If set, skip steps whose output is already known */
 	snapshot?: RunSnapshot;
+	/** Per-run working directory override (CLI sends its cwd) */
+	working_directory?: string;
 };
 
 export type Engine = {
@@ -51,9 +53,13 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 			const run_id = opts?.run_id ?? crypto.randomUUID();
 			const trace = new TraceCollector();
 
-			const effective_opts: EngineOpts = opts?.checkpoint
+			let effective_opts: EngineOpts = opts?.checkpoint
 				? { ...engine_opts, providers: { ...engine_opts.providers, checkpoint: opts.checkpoint } }
-				: engine_opts;
+				: { ...engine_opts };
+
+			if (opts?.working_directory) {
+				effective_opts = { ...effective_opts, working_directory: opts.working_directory };
+			}
 
 			if (opts?.on_trace) {
 				trace.onEvent(opts.on_trace);
