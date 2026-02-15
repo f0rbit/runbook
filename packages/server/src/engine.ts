@@ -309,13 +309,22 @@ async function executeStep(
 		timestamp: new Date(),
 	});
 
+	// Wrap engine so sub-workflows inherit the current run's working_directory
+	const scoped_engine: Engine = {
+		run: (workflow, input, opts) =>
+			ctx_base.engine.run(workflow, input, {
+				...opts,
+				working_directory: opts?.working_directory ?? ctx_base.working_directory,
+			}),
+	};
+
 	const ctx: StepContext = {
 		workflow_id: ctx_base.workflow_id,
 		step_id: step.id,
 		run_id: ctx_base.run_id,
 		trace: ctx_base.trace,
 		signal: ctx_base.signal,
-		engine: ctx_base.engine,
+		engine: scoped_engine,
 		working_directory: ctx_base.working_directory,
 	};
 
