@@ -395,7 +395,7 @@ export class OpenCodeExecutor implements AgentExecutor {
 function extractText(parts: any[]): string {
 	return parts
 		.filter((p: any) => p.type === "text")
-		.map((p: any) => p.text ?? "")
+		.map((p: any) => p.text ?? p.content ?? "")
 		.join("\n");
 }
 

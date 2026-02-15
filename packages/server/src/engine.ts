@@ -85,7 +85,8 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 			let previous_output: unknown = input_parsed.data;
 			const workflow_input = input_parsed.data;
 
-			for (const node of workflow.steps) {
+			for (let node_index = 0; node_index < workflow.steps.length; node_index++) {
+				const node = workflow.steps[node_index];
 				if (opts?.signal?.aborted) {
 					const step_id = node.type === "sequential" ? node.step.id : (node.branches[0]?.step.id ?? "unknown");
 					const step_err = errors.aborted(step_id);
@@ -98,6 +99,9 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 				}
 
 				if (node.type === "sequential") {
+					console.log(
+						`[engine] step ${node_index + 1}/${workflow.steps.length}: ${node.step.id} (${node.step.kind.kind})`,
+					);
 					if (opts?.snapshot?.completed_steps.has(node.step.id)) {
 						const stored_output = opts.snapshot.completed_steps.get(node.step.id);
 						trace.emit({
@@ -110,6 +114,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 						continue;
 					}
 
+					console.log(`[engine] executing mapper for ${node.step.id}`);
 					const result = await executeStep(
 						node.step,
 						node.mapper,
@@ -127,6 +132,7 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 					);
 
 					if (!result.ok) {
+						console.log(`[engine] step ${node.step.id} failed:`, result.error.kind);
 						const wf_error = errors.step_failed(
 							node.step.id,
 							result.error,
@@ -142,8 +148,11 @@ export function createEngine(engine_opts: EngineOpts = {}): Engine {
 						});
 						return err(wf_error);
 					}
+					console.log(`[engine] step ${node.step.id} completed`);
 					previous_output = result.value;
 				} else {
+					const branch_ids = node.branches.map((b) => b.step.id).join(", ");
+					console.log(`[engine] step ${node_index + 1}/${workflow.steps.length}: parallel [${branch_ids}]`);
 					if (opts?.snapshot) {
 						const snapshot = opts.snapshot;
 						const all_stored = node.branches.every((b) => snapshot.completed_steps.has(b.step.id));

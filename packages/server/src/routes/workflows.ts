@@ -145,9 +145,12 @@ function executeRunAsync(
 							trace: current_run.trace,
 							duration_ms: current_run.trace.duration_ms,
 						};
-						deps.git_store.store(storable).then((r) => {
-							if (!r.ok) console.error(`[runbook] git-store checkpoint write failed for ${run_id}:`, r.error);
-						});
+						deps.git_store
+							.store(storable)
+							.then((r) => {
+								if (!r.ok) console.error(`[runbook] git-store checkpoint write failed for ${run_id}:`, r.error);
+							})
+							.catch((e) => console.error(`[runbook] git-store checkpoint write threw for ${run_id}:`, e));
 					}
 				}
 			},
@@ -196,10 +199,27 @@ function executeRunAsync(
 						trace: final_run.trace,
 						duration_ms: final_run.trace.duration_ms,
 					};
-					deps.git_store.store(storable).then((r) => {
-						if (!r.ok) console.error(`[runbook] git-store write failed for ${run_id}:`, r.error);
-					});
+					deps.git_store
+						.store(storable)
+						.then((r) => {
+							if (!r.ok) console.error(`[runbook] git-store write failed for ${run_id}:`, r.error);
+						})
+						.catch((e) => console.error(`[runbook] git-store write threw for ${run_id}:`, e));
 				}
 			}
+		})
+		.catch((e) => {
+			console.error(`[runbook] engine.run() rejected for ${run_id}:`, e);
+			deps.state.removeController(run_id);
+			deps.state.update(run_id, {
+				status: "failure",
+				error: {
+					kind: "step_failed",
+					step_id: "unknown",
+					error: { kind: "execution_error", step_id: "unknown", cause: e instanceof Error ? e.message : String(e) },
+					trace: { run_id, workflow_id: workflow.id, events: trace_events, status: "failure", duration_ms: 0 },
+				},
+				completed_at: new Date(),
+			});
 		});
 }
