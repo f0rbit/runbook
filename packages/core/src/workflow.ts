@@ -1,9 +1,12 @@
+import { err, ok } from "@f0rbit/corpus";
 import type { z } from "zod";
+import { errors } from "./errors";
 import type {
 	MapperFn,
 	ParallelOutputTuple,
 	ParallelStepDef,
 	Step,
+	StepContext,
 	StepNode,
 	Workflow,
 	WorkflowBuilder,
@@ -30,7 +33,7 @@ export function defineWorkflow<WI>(input: z.ZodType<WI>): WorkflowBuilder<WI, WI
 			done(id: string, output: z.ZodType<LastO>): Workflow<WI, LastO> {
 				const frozen_steps = [...steps];
 
-				return {
+				const workflow: Workflow<WI, LastO> = {
 					id,
 					input,
 					output,
@@ -42,13 +45,19 @@ export function defineWorkflow<WI>(input: z.ZodType<WI>): WorkflowBuilder<WI, WI
 							output,
 							kind: {
 								kind: "fn",
-								run: async () => {
-									throw new Error("Sub-workflow steps must be executed through the engine");
+								run: async (step_input: WI, ctx: StepContext) => {
+									const result = await ctx.engine.run(workflow, step_input);
+									if (!result.ok) {
+										return err(errors.execution(id, `Sub-workflow '${id}' failed: ${result.error.kind}`));
+									}
+									return ok(result.value.output);
 								},
 							},
 						};
 					},
 				};
+
+				return workflow;
 			},
 		};
 	}

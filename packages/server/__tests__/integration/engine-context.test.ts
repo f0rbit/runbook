@@ -232,4 +232,66 @@ describe("ctx.engine — sub-workflow execution", () => {
 		}
 		expect(shell_provider.executed.length).toBe(2);
 	});
+
+	test("asStep() executes sub-workflow through the engine", async () => {
+		const shell_provider = new InMemoryShellProvider();
+		shell_provider.on(/echo/, { stdout: "from sub-workflow" });
+
+		const inner_step = shell({
+			id: "inner_shell",
+			input: z.object({ cmd: z.string() }),
+			output: z.object({ result: z.string() }),
+			command: (input) => input.cmd,
+			parse: (stdout) => ok({ result: stdout.trim() }),
+		});
+
+		const inner_workflow = defineWorkflow(z.object({ cmd: z.string() }))
+			.pipe(inner_step, (wi) => wi)
+			.done("inner", z.object({ result: z.string() }));
+
+		// Use asStep() instead of manually writing a fn() step with ctx.engine.run()
+		const outer_workflow = defineWorkflow(z.object({ cmd: z.string() }))
+			.pipe(inner_workflow.asStep(), (wi) => wi)
+			.done("outer_as_step", z.object({ result: z.string() }));
+
+		const engine = createEngine({
+			providers: { shell: shell_provider },
+		});
+
+		const result = await engine.run(outer_workflow, { cmd: "echo hello" });
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.output.result).toBe("from sub-workflow");
+		}
+		// Verify shell provider was used (providers inherited through asStep)
+		expect(shell_provider.executed.length).toBe(1);
+	});
+
+	test("asStep() propagates sub-workflow errors correctly", async () => {
+		const shell_provider = new InMemoryShellProvider();
+		// No handler registered — shell will fail
+
+		const inner_step = shell({
+			id: "will_fail",
+			input: z.object({}),
+			output: z.object({ result: z.string() }),
+			command: () => "nonexistent-command",
+			parse: (stdout) => ok({ result: stdout }),
+		});
+
+		const inner_workflow = defineWorkflow(z.object({}))
+			.pipe(inner_step, () => ({}))
+			.done("failing_inner", z.object({ result: z.string() }));
+
+		const outer_workflow = defineWorkflow(z.object({}))
+			.pipe(inner_workflow.asStep(), () => ({}))
+			.done("outer_error_test", z.object({ result: z.string() }));
+
+		const engine = createEngine({
+			providers: { shell: shell_provider },
+		});
+
+		const result = await engine.run(outer_workflow, {});
+		expect(result.ok).toBe(false);
+	});
 });
