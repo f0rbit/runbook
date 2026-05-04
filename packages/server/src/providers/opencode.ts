@@ -20,6 +20,7 @@ export type OpenCodeExecutorOpts = {
 
 export class OpenCodeExecutor implements AgentExecutor {
 	private client: any;
+	private session_directories: Map<string, string> = new Map();
 
 	private constructor(client: any) {
 		this.client = client;
@@ -64,6 +65,10 @@ export class OpenCodeExecutor implements AgentExecutor {
 				return err({ kind: "session_failed", cause: "No session ID in response" });
 			}
 
+			if (opts.working_directory) {
+				this.session_directories.set(id, opts.working_directory);
+			}
+
 			return ok({
 				id,
 				created_at: session.time?.created ? new Date(session.time.created) : new Date(),
@@ -84,7 +89,13 @@ export class OpenCodeExecutor implements AgentExecutor {
 			// Activity monitor runs in parallel — detects when the session has
 			// stalled (no time.updated change for stale_timeout_ms).
 			let monitor_active = true;
-			const monitor_promise = this.monitorActivity(session_id, stale_timeout_ms, () => monitor_active, opts.signal);
+			const monitor_promise = this.monitorActivity(
+				session_id,
+				stale_timeout_ms,
+				() => monitor_active,
+				opts.signal,
+				this.session_directories.get(session_id),
+			);
 
 			// Blocking prompt handles response collection
 			const prompt_promise = this.client.session.prompt({
@@ -93,6 +104,7 @@ export class OpenCodeExecutor implements AgentExecutor {
 				...(opts.model ? { model: { providerID: opts.model.provider_id, modelID: opts.model.model_id } } : {}),
 				...(opts.agent_type ? { agent: opts.agent_type } : {}),
 				...(opts.system_prompt ? { system: opts.system_prompt } : {}),
+				...(opts.working_directory ? { directory: opts.working_directory } : {}),
 			});
 
 			// Race: normal completion vs stale detection
@@ -110,16 +122,17 @@ export class OpenCodeExecutor implements AgentExecutor {
 					// Session may already be finished
 				}
 
-				// Check if stale due to pending permission request (parent + children)
+				// Check if stale due to pending permission/question request (parent + children)
 				let pending_permission: string | undefined;
 				let pending_session_id: string | undefined;
 				let activity_summary = "";
+				const stale_directory = this.session_directories.get(session_id);
 				try {
-					const session_result = await this.client.session.get({ sessionID: session_id });
+					const session_result = await this.client.session.get({ sessionID: session_id, directory: stale_directory });
 					const session_data = session_result?.data ?? session_result;
 					activity_summary += `Session ${session_id} (${session_data?.title ?? "untitled"})`;
 
-					const all_sessions_result = await this.client.session.list({});
+					const all_sessions_result = await this.client.session.list({ directory: stale_directory });
 					const all_sessions = all_sessions_result?.data ?? all_sessions_result;
 					const children = Array.isArray(all_sessions)
 						? all_sessions.filter((s: any) => s.parentID === session_id)
@@ -132,12 +145,27 @@ export class OpenCodeExecutor implements AgentExecutor {
 					// Check permissions across entire session tree
 					const tree_ids = new Set([session_id, ...children.map((c: any) => c.id)]);
 					try {
-						const perm_result = await this.client.permission.list();
+						const perm_result = await this.client.permission.list({ directory: stale_directory });
 						const perms = perm_result?.data ?? perm_result;
 						if (Array.isArray(perms)) {
 							const match = perms.find((p: any) => tree_ids.has(p.sessionID));
 							if (match) {
 								pending_permission = match.permission;
+								pending_session_id = match.sessionID;
+							}
+						}
+					} catch {
+						// Best effort
+					}
+
+					// Also check for pending questions
+					try {
+						const question_result = await this.client.question.list({ directory: stale_directory });
+						const questions = question_result?.data ?? question_result;
+						if (Array.isArray(questions)) {
+							const match = questions.find((q: any) => tree_ids.has(q.sessionID));
+							if (match && !pending_permission) {
+								pending_permission = "question";
 								pending_session_id = match.sessionID;
 							}
 						}
@@ -195,6 +223,7 @@ export class OpenCodeExecutor implements AgentExecutor {
 		stale_timeout_ms: number,
 		is_active: () => boolean,
 		signal?: AbortSignal,
+		directory?: string,
 	): Promise<void> {
 		let last_activity = Date.now();
 
@@ -207,7 +236,7 @@ export class OpenCodeExecutor implements AgentExecutor {
 				const session_ids = new Set([session_id]);
 				let child_sessions: any[] = [];
 				try {
-					const all_sessions_result = await this.client.session.list({});
+					const all_sessions_result = await this.client.session.list({ directory });
 					const all_sessions = all_sessions_result?.data ?? all_sessions_result;
 					if (Array.isArray(all_sessions)) {
 						child_sessions = all_sessions.filter((s: any) => s.parentID === session_id);
@@ -222,7 +251,7 @@ export class OpenCodeExecutor implements AgentExecutor {
 				// Don't reset last_activity in that case so the stale timeout fires.
 				let has_pending_permission = false;
 				try {
-					const perm_result = await this.client.permission.list();
+					const perm_result = await this.client.permission.list({ directory });
 					const perms = perm_result?.data ?? perm_result;
 					if (Array.isArray(perms)) {
 						has_pending_permission = perms.some((p: any) => session_ids.has(p.sessionID));
@@ -232,14 +261,16 @@ export class OpenCodeExecutor implements AgentExecutor {
 				}
 
 				// Auto-reject any pending questions from this session tree
+				let has_pending_question = false;
 				try {
-					const question_result = await this.client.question.list();
+					const question_result = await this.client.question.list({ directory });
 					const questions = question_result?.data ?? question_result;
 					if (Array.isArray(questions)) {
 						for (const q of questions) {
 							if (session_ids.has(q.sessionID)) {
+								has_pending_question = true;
 								try {
-									await this.client.question.reject({ requestID: q.id });
+									await this.client.question.reject({ requestID: q.id, directory });
 								} catch {
 									// Best effort — question may already be resolved
 								}
@@ -250,10 +281,12 @@ export class OpenCodeExecutor implements AgentExecutor {
 					// Question endpoint may not be available
 				}
 
-				// Check session status — if busy and no pending permissions, actively working
-				if (!has_pending_permission) {
+				const is_blocked = has_pending_permission || has_pending_question;
+
+				// Check session status — if busy and no pending permissions/questions, actively working
+				if (!is_blocked) {
 					try {
-						const status_result = await this.client.session.status({});
+						const status_result = await this.client.session.status({ directory });
 						const status_map = status_result?.data ?? status_result;
 						const session_status = status_map?.[session_id];
 						if (session_status?.type === "busy") {
@@ -266,11 +299,11 @@ export class OpenCodeExecutor implements AgentExecutor {
 				}
 
 				// Check time.updated on parent session
-				const session_result = await this.client.session.get({ sessionID: session_id });
+				const session_result = await this.client.session.get({ sessionID: session_id, directory });
 				const session_data = session_result?.data ?? session_result;
 				const parent_updated = session_data?.time?.updated;
 
-				if (parent_updated && !has_pending_permission) {
+				if (parent_updated && !is_blocked) {
 					const updated_ms = typeof parent_updated === "number" ? parent_updated : new Date(parent_updated).getTime();
 					if (updated_ms > last_activity) {
 						last_activity = updated_ms;
@@ -279,7 +312,7 @@ export class OpenCodeExecutor implements AgentExecutor {
 				}
 
 				// Check child sessions' activity
-				if (!has_pending_permission) {
+				if (!is_blocked) {
 					for (const s of child_sessions) {
 						const child_updated = s.time?.updated;
 						if (child_updated) {
@@ -308,6 +341,7 @@ export class OpenCodeExecutor implements AgentExecutor {
 			}
 
 			await this.client.session.delete({ sessionID: session_id });
+			this.session_directories.delete(session_id);
 			return ok(undefined);
 		} catch (e) {
 			return err({

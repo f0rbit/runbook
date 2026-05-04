@@ -531,6 +531,7 @@ async function executeAgentStep(
 		agent_type: agent_opts?.agent_type,
 		timeout_ms: agent_opts?.timeout_ms,
 		signal: ctx.signal,
+		working_directory: engine_opts.working_directory,
 	});
 
 	// Stop event streaming
@@ -587,6 +588,7 @@ async function executeAgentStep(
 			agent_type: agent_opts?.agent_type,
 			timeout_ms: 60_000,
 			signal: ctx.signal,
+			working_directory: engine_opts.working_directory,
 		});
 
 		if (retry_result.ok) {
@@ -627,6 +629,7 @@ async function executeAgentStep(
 			agent_type: agent_opts?.agent_type,
 			timeout_ms: 60_000,
 			signal: ctx.signal,
+			working_directory: engine_opts.working_directory,
 		});
 
 		if (fix_result.ok) {

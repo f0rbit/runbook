@@ -95,6 +95,7 @@ export type PromptOpts = {
 	agent_type?: string;
 	timeout_ms?: number;
 	signal?: AbortSignal;
+	working_directory?: string;
 };
 
 export type AgentToolCall = {

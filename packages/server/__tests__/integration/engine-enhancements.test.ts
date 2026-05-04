@@ -198,5 +198,31 @@ describe("engine enhancements", () => {
 			expect(agent_executor.created_sessions.length).toBe(1);
 			expect(agent_executor.created_sessions[0].opts.working_directory).toBe("/tmp/test-project");
 		});
+
+		test("passes working_directory to agent prompt", async () => {
+			const agent_executor = new InMemoryAgentExecutor();
+			agent_executor.on(/./, { text: '{"result": "ok"}' });
+
+			const step = agent({
+				id: "test_agent",
+				input: z.object({ task: z.string() }),
+				output: z.object({ result: z.string() }),
+				prompt: (input) => input.task,
+				mode: "analyze",
+			});
+
+			const workflow = defineWorkflow(z.object({ task: z.string() }))
+				.pipe(step, (wi) => wi)
+				.done("wd-prompt-test", z.object({ result: z.string() }));
+
+			const engine = createEngine({
+				providers: { agent: agent_executor },
+				working_directory: "/tmp/test-project",
+			});
+			await engine.run(workflow, { task: "hello" });
+
+			expect(agent_executor.prompted.length).toBe(1);
+			expect(agent_executor.prompted[0].opts.working_directory).toBe("/tmp/test-project");
+		});
 	});
 });
