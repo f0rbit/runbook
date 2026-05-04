@@ -16,17 +16,14 @@ export async function resolveProviders(
 	let agent: AgentExecutor | undefined;
 	const agent_config = provider_config?.agent;
 
-	if (agent_config && agent_config.type === "opencode") {
+	if (agent_config && agent_config.type === "claude-code") {
 		// Dynamic import to avoid hard dependency when no agent config
-		const { OpenCodeExecutor } = await import("./opencode");
-		const executor_result = await OpenCodeExecutor.create({
-			base_url: agent_config.base_url,
-			auto_approve: agent_config.auto_approve,
-		});
+		const { ClaudeCodeExecutor } = await import("./claude-code");
+		const executor_result = await ClaudeCodeExecutor.create();
 		if (!executor_result.ok) {
 			return err({
 				kind: "agent_init_failed" as const,
-				cause: `Failed to create OpenCode executor: ${executor_result.error.kind} - ${"cause" in executor_result.error ? executor_result.error.cause : "unknown"}`,
+				cause: `Failed to create Claude Code executor: ${executor_result.error.kind} - ${"cause" in executor_result.error ? executor_result.error.cause : "unknown"}`,
 			});
 		}
 		agent = executor_result.value;

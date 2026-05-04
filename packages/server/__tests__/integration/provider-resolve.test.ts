@@ -33,17 +33,15 @@ describe("resolveProviders", () => {
 		}
 	});
 
-	test("returns error when opencode executor fails to initialize", async () => {
-		// OpenCode executor requires a running server or SDK.
-		// Without it, create() will fail with connection_failed.
-		// We test this to confirm the error propagation works.
+	test("creates claude-code executor when configured", async () => {
 		const result = await resolveProviders({
-			agent: { type: "opencode", base_url: "http://localhost:99999" },
+			agent: { type: "claude-code" },
 		});
-		// This may succeed (if opencode-ai/sdk is installed and creates a client
-		// without connecting), or fail (if it tries to connect immediately).
-		// Either way, it should not throw.
-		expect(typeof result.ok).toBe("boolean");
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.shell).toBeDefined();
+			expect(result.value.agent).toBeDefined();
+		}
 	});
 });
 

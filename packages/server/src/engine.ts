@@ -705,6 +705,6 @@ function agentErrorMessage(error: AgentError): string {
 		case "prompt_failed":
 			return error.cause;
 		case "timeout":
-			return `Agent timed out after ${error.timeout_ms}ms — inspect with: opencode attach ${error.session_id}`;
+			return `Agent timed out after ${error.timeout_ms}ms — session: ${error.session_id}`;
 	}
 }

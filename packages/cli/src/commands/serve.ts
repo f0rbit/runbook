@@ -32,14 +32,13 @@ export async function handleServe(args: string[]): Promise<void> {
 
 	// Verify agent provider connectivity
 	if (provider_result.value.agent) {
-		const agent_url = config.providers?.agent?.base_url ?? "local";
-		console.log(`Checking agent provider (opencode @ ${agent_url})...`);
+		console.log("Checking agent provider (claude-code)...");
 		const verify_result = await verifyProviders(provider_result.value);
 		if (!verify_result.ok) {
 			console.error(
 				`Agent provider unreachable after ${verify_result.error.attempts} attempts: ${verify_result.error.cause}`,
 			);
-			console.error("Is OpenCode running? Start it with: opencode serve");
+			console.error("Verify ANTHROPIC_API_KEY is set in your environment.");
 			process.exit(1);
 		}
 		console.log("Agent provider: connected");
