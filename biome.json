@@ -1,7 +1,22 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.3.14/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "files": {
-    "includes": ["**", "!docs/.astro", "!docs/dist", "!**/*.astro"]
+    "includes": [
+      "**",
+      "!docs/.astro",
+      "!docs/dist",
+      "!**/*.astro",
+      "!.output",
+      "!.sst",
+      "!.vinxi",
+      "!test-results",
+      "!sst-env.d.ts"
+    ]
   },
   "assist": {
     "actions": {
