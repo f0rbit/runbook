@@ -277,7 +277,7 @@ export default defineConfig({
   workflows: [workflow],
   server: { port: 4400 },
   providers: {
-    agent: { type: "opencode" },
+    agent: { type: "claude-code" },
   },
   artifacts: { git: true },
 });

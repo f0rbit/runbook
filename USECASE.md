@@ -34,7 +34,7 @@ const pipeline = defineWorkflow({ id: "review", input: z.object({ pr_url: z.stri
   .done();
 ```
 
-**AgentExecutor pattern.** Agent steps dispatch to a pluggable executor interface, not raw LLM APIs. The executor manages sessions, prompts, tool calls, and permissions. OpenCode is the first implementation; Claude Code, Aider, and others can be added behind the same interface without changing workflow definitions.
+**AgentExecutor pattern.** Agent steps dispatch to a pluggable executor interface, not raw LLM APIs. The executor manages sessions, prompts, tool calls, and permissions. Claude Code is the bundled implementation; Aider, Goose, and others can be added behind the same interface without changing workflow definitions.
 
 **Two agent output modes.** `"analyze"` mode extracts structured JSON from the LLM's text response (for analysis, review, planning). `"build"` mode derives output from session metadata like `files_changed` (for code generation, refactoring). The engine handles both -- workflow authors just declare the mode and the output schema.
 
@@ -140,7 +140,7 @@ Traces are stored in git refs (`refs/runbook/runs/<run-id>`) alongside step-leve
 
 ## 7. Current Status and Future Scope
 
-Runbook v0.1 ships with linear pipelines, parallel fan-out/fan-in, four step types (fn, shell, agent, checkpoint), in-memory state, and git artifact storage. OpenCode is the first agent executor.
+Runbook v0.1 ships with linear pipelines, parallel fan-out/fan-in, four step types (fn, shell, agent, checkpoint), in-memory state, and git artifact storage. Claude Code is the bundled agent executor.
 
 Planned for future versions:
 
@@ -148,6 +148,6 @@ Planned for future versions:
 - **Conditional branching** -- route to different steps based on previous output
 - **Retry policies** -- configurable retry with backoff for failed steps
 - **Workflow visualizer** -- terminal and web UI for trace inspection
-- **Additional agent executors** -- Claude Code, Aider, Goose behind the same AgentExecutor interface
+- **Additional agent executors** -- Aider, Goose, Cursor behind the same AgentExecutor interface
 - **MCP integration** -- expose workflows as MCP tools, consume MCP servers as step providers
 - **Node.js support** -- currently Bun-only; Node.js runtime support in a future release

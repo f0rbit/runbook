@@ -25,7 +25,7 @@
 ## Key Architecture Decisions
 - **Client/Server split**: Engine runs in server process, CLI is a thin HTTP client
 - **Agent steps dispatch to AgentExecutor interface**, not raw LLM APIs
-  - OpenCode is the first implementation via `@opencode-ai/sdk`
+  - Claude Code is the bundled implementation via `@anthropic-ai/claude-agent-sdk`
   - The executor manages sessions, prompts, and tool calls
   - Two output modes: `"analyze"` (JSON from LLM text) and `"build"` (output from session metadata)
   - Agent output is validated against the step's Zod output schema regardless of mode
@@ -75,7 +75,7 @@
 
 ## Provider Wiring
 - `resolveProviders(config)` in server package creates real providers from `ProviderConfig`
-  - Always creates `BunShellProvider`; creates `OpenCodeExecutor` when `agent.type === "opencode"`
+  - Always creates `BunShellProvider`; creates `ClaudeCodeExecutor` when `agent.type === "claude-code"`
 - `createServerCheckpointProvider()` bridges engine checkpoint flow with HTTP endpoint
 - `handleServe` calls `resolveProviders()` and passes `working_directory` to `createEngine()`
 
