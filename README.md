@@ -198,33 +198,75 @@ describe("my workflow", () => {
 Usage: runbook <command> [options]
 
 Commands:
-  serve                        Start the runbook server
-  run <workflow> [--input json] Submit a workflow run
-  status <run-id>              Get run status
-  trace <run-id>               Display run trace
-  list                         List available workflows
-  history                      List stored runs from git
-  show <run-id> [step-id]      Show run or step artifacts
-  diff <run-id-1> <run-id-2>   Diff two stored runs
-  push [--remote origin]       Push artifact refs to remote
-  pull [--remote origin]       Pull artifact refs from remote
+  serve                                  Start the runbook server
+  run <workflow> [task...] [--input json] Submit a workflow run (positional words become { task })
+  status [run-id] [--live]               Get run status (defaults to latest, --live streams events)
+  trace <run-id>                         Display run trace
+  list                                   List available workflows
+  cancel [run-id]                        Cancel a running workflow (defaults to latest)
+  resume <run-id>                        Resume a checkpoint-paused run
+  history                                List stored runs from git
+  show <run-id> [step-id]                Show run or step artifacts
+  diff <run-id-1> <run-id-2>             Diff two stored runs
+  push [--remote origin]                 Push artifact refs to remote
+  pull [--remote origin]                 Pull artifact refs from remote
 
 Options:
-  --url <url>                  Server URL (default: http://localhost:4400)
-  --config <path>              Config file path
+  --url <url>                            Server URL (default: http://localhost:4400, env: RUNBOOK_URL)
+  --config <path>                        Config file path
+  --help                                 Show this help
 ```
 
 ```bash
 # Start the server
 runbook serve
 
-# Run a workflow
+# Run a workflow — explicit JSON input
 runbook run code-review --input '{"code": "console.log(1)"}'
+
+# Run a workflow — bare positional shorthand for { task: "..." }
+runbook run feature add a dark-mode toggle to the settings page
+
+# Watch a running workflow
+runbook status --live
+
+# Cancel a runaway run
+runbook cancel
 
 # Inspect results
 runbook trace <run-id>
 runbook show <run-id> analyze
 ```
+
+## HTTP API
+
+The CLI is a thin client over these endpoints. They're stable; build your own client if you need to.
+
+```
+GET  /health
+GET  /workflows                                 List registered workflows
+POST /workflows/:id/run                         Submit a run, returns { run_id }
+POST /workflows/:id/resume/:run_id              Resume a checkpoint-paused run
+GET  /runs                                      List in-memory runs (latest first)
+GET  /runs/history                              List runs archived to git-store
+GET  /runs/:id                                  Run state + status
+GET  /runs/:id/trace                            Full typed event stream
+GET  /runs/:id/events                           SSE stream of new events
+POST /runs/:id/cancel                           Abort the run (shell + agent + parallel branches)
+POST /runs/:id/checkpoints/:checkpoint_id       Resolve a paused checkpoint
+```
+
+## Integrations
+
+| Surface | Bundled | Notes |
+|---|---|---|
+| Agent executor | **Claude Code** via `@anthropic-ai/claude-agent-sdk` | `ClaudeCodeExecutor`. Reads `ANTHROPIC_API_KEY` from env. Push-based event streaming, no polling. |
+| Shell | **Bun** | `BunShellProvider`. Honours `working_directory` and `AbortSignal` for cancellation. |
+| Checkpoint | In-process | Engine pauses, server holds the pending promise on `RunState`, HTTP endpoint resolves it with a Zod-parsed value. |
+| Artifact persistence | **Git refs** (opt-in) | `@f0rbit/runbook-git-store`. Completed runs + checkpoint snapshots under `refs/runbook/runs/<run-id>` -- enable via `artifacts: { git: true }`. |
+| Test doubles | **In-memory** | `InMemoryAgentExecutor`, `InMemoryShellProvider` from `@f0rbit/runbook/test`. Pattern-matched scripted responses, no mocking. |
+
+Real-provider integration tests are gated via `describe.skipIf(!process.env.ANTHROPIC_API_KEY)`. Unit/integration suites use the in-memory providers and run unconditionally.
 
 ## Git Artifact Store
 
